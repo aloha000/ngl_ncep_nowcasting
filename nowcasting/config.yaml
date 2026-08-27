@@ -1,0 +1,52 @@
+# iTransformer GNSS -> NCEP nowcasting: all run parameters.
+# Paths are relative to the repo root (or absolute).
+# Override any key from the command line, e.g.:
+#   python nowcasting/train_iTransformer_nowcast.py --set stations=128 --set epochs=20
+
+data:
+  ngl_zarr: dataset/ngl_hourly.zarr          # hourly NGL ZTD/ZWD store
+  ncep_zarr: dataset/ncep_hourly.zarr        # hourly NCEP surface store
+  neighbors_parquet: dataset/target_gnss_neighbors.parquet  # rank-ordered GNSS neighbors per target
+
+splits:            # UTC, half-open [start, end); empty end = end of data
+  train_start: "2018-01-01T00:00"
+  train_end: "2023-11-01T00:00"
+  val_start: "2023-11-01T00:00"
+  val_end: "2024-03-01T00:00"
+  test_start: "2024-03-01T00:00"
+  test_end: ""
+
+sampling:
+  stations: 64                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
+  station_offset: 0            # skip this many target stations first
+  max_neighbors: 5             # GNSS neighbors per target (channels = 2*this + this)
+  min_valid_neighbors: 3       # minimum neighbors valid over T-6..T to keep a sample
+  hour_stride: 6               # subsample train hours (1 = keep all)
+  val_stride: 1                # subsample val hours
+  test_stride: 1               # subsample test hours
+  load_full_arrays: false      # load whole NGL stores into RAM (~3.5GB, slow on HDD)
+  load_full_ncep: true         # load NCEP variables row-major into RAM (~3.3GB)
+
+model:
+  seq_len: 7                   # input window T-6 .. T
+  pred_len: 1                  # nowcast horizon
+  d_model: 128
+  n_heads: 4
+  e_layers: 2
+  d_ff: 512
+  dropout: 0.1
+  activation: gelu
+
+training:
+  epochs: 10
+  batch_size: 256
+  learning_rate: 0.001
+  patience: 3                  # early stopping patience (val loss)
+  num_workers: 0
+  seed: 2021
+  target_scale: true           # z-score NCEP targets with train statistics
+
+run:
+  device: auto                 # auto | cuda | cuda:N | cpu
+  model_id: gnss_nowcast
+  out_root: nowcasting/outputs

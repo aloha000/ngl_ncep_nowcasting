@@ -1,0 +1,112 @@
+# GNSS → NCEP nowcasting with iTransformer
+
+## Task
+
+Hourly nowcasting: use the NGL zenith tropospheric delays (**ZTD** / **ZWD**) of the
+nearest GNSS stations over the 7-hour window **T-6 .. T** to predict the NCEP
+surface observations (**p, slp, t2m, r2m, u10, v10**) at time **T** for each
+target surface station.
+
+Model: `Time-Series-Library/models/iTransformer.py` (iTransformer, adapted,
+see below).
+
+## Temporal splits (UTC)
+
+| Split | Range |
+| --- | --- |
+| train | `2018-01-01T00:00` ≤ T < `2023-11-01T00:00` |
+| val | `2023-11-01T00:00` ≤ T < `2024-03-01T00:00` |
+| test | `2024-03-01T00:00` ≤ T ≤ last available hour (`2024-08-15T20:00`) |
+
+Boundaries are configurable via `--train-start/--train-end/--val-start/--val-end/--test-start/--test-end`.
+
+## Input / output layout
+
+Per sample:
+
+- Input `x`: `(7, 15)` float32
+  - channels `0..9`: `ztd`, `zwd` of the up-to-5 nearest GNSS stations (rank 1..5,
+    from `dataset/target_gnss_neighbors.parquet`), zero-padded when a station is
+    missing from the 7-hour window;
+  - channels `10..14`: 0/1 validity mask per neighbor (1 = the neighbor has finite
+    ZTD **and** ZWD at all 7 hours).
+- Time marks `x_mark`: `(7, 4)` timeF features (hour/day-of-week/day-of-month/day-of-year).
+- Target `y`: `(1, 6)` NCEP variables at T, z-scored with train-split statistics
+  (disable with `--no-target-scale`).
+
+Samples are kept only when ≥ `--min-valid-neighbors` (default 3) neighbors are
+valid and all 6 target values are finite.
+
+## Files
+
+| Path | Purpose |
+| --- | --- |
+| `nowcasting/train_iTransformer_nowcast.py` | data index + training + testing entry point |
+| `nowcasting/config.yaml` | all run parameters (data paths, splits, sampling, model, training, run) |
+| `nowcasting/outputs/<setting>/checkpoint.pth` | best checkpoint (by val loss) |
+| `nowcasting/outputs/<setting>/config_used.yaml` | effective config of the run (reproducibility) |
+| `nowcasting/outputs/<setting>/test_predictions.npz` | preds/trues (physical units) and normalized copies |
+| `nowcasting/outputs/<setting>/test_metrics.json` | per-variable MAE/MSE/RMSE on the test split |
+| `Time-Series-Library/models/iTransformer.py` | model (adapted, see below) |
+
+## Model adaptation
+
+`iTransformer.py` keeps its original behaviour by default and gains one optional
+feature: when `configs.separate_output` is set (our script sets it), a final
+`nn.Linear(enc_in, c_out)` maps the per-input-variate projections to the target
+variates, and the non-stationary de-normalization is skipped because the output
+channels are not the input channels. All other tasks/runs are unchanged.
+
+## How to run
+
+All parameters live in `nowcasting/config.yaml` (data paths, temporal splits,
+station/hour sampling, model, training, run). Use the `gnss` conda environment
+(torch + CUDA + zarr):
+
+```bash
+conda activate gnss
+# or
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/bin/python \
+    nowcasting/train_iTransformer_nowcast.py --help
+
+# default run (uses nowcasting/config.yaml)
+python nowcasting/train_iTransformer_nowcast.py
+
+# use another config file
+python nowcasting/train_iTransformer_nowcast.py --config my_config.yaml
+
+# override individual keys from the command line
+python nowcasting/train_iTransformer_nowcast.py --set stations=128 --set epochs=20
+
+# train on ALL usable stations (stations <= 0 means "all", from station_offset onward)
+# currently ~1915 stations meet min_valid_neighbors=3; ~36M train hours with hour_stride=1
+python nowcasting/train_iTransformer_nowcast.py --set stations=0 --set hour_stride=6
+```
+
+The effective (merged) config is printed at startup and saved as
+`config_used.yaml` next to the checkpoint. Unknown config keys or `--set` keys
+raise an error so typos are caught early.
+
+Environment note: the `gnss` env had `zarr` missing and an incompatible
+`numcodecs`; it now has `zarr==2.18.2` + `numcodecs==0.12.1` (matches the
+version pair used to build the stores). `pyarrow`/`pandas` were already present.
+
+## I/O notes (this filesystem is slow)
+
+- The NGL store is chunked `(8760, 1)` (~52k tiny column chunks): we read the
+  neighbor columns directly per station — fast for a station subset, but a full
+  array read is very slow. `--load-full-arrays` exists but is off by default.
+- The NCEP store is chunked `(48, 2331)`: per-column reads are slow, so the
+  script loads the 6 variables row-major into RAM once (~3.3 GB; `--no-load-full-ncep` to disable).
+- Use `--station-offset` to shift the selected stations and `--stations` to
+  control the subset; `--hour-stride` subsamples train hours (val/test default
+  to every hour).
+
+## Next steps / known simplifications
+
+- Tune values in `config.yaml` (d_model, layers, lr schedule, more stations/epochs).
+- Save prediction provenance (station id + UTC per sample).
+- Filter on `dataset/sample_index.parquet` when regenerated, and/or per-variable
+  loss weighting to balance variable scales.
+- Add input feature engineering (bearing/distance/height-difference embeddings,
+  NCEP history channels) and inverse/denormalization handling in the model.
