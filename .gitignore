@@ -2,3 +2,5 @@ ngl/
 oss_ngl/
 surf_ncep/
 dataset/
+logs/
+outputs/

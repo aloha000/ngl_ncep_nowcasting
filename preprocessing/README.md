@@ -37,6 +37,19 @@ Build the exact-hour ZTD/ZWD store with:
 python preprocessing/build_ngl_hourly_zarr.py --workers 8
 ```
 
+## 5-minute NGL Zarr
+
+Identical to the hourly build except the time sampling is 5 minutes:
+
+```bash
+python preprocessing/build_ngl_5min_zarr.py --workers 8
+```
+
+The default output is `dataset/ngl_5min.zarr`; records are kept only at exact
+UTC 5-minute epochs (seconds % 300 == 0), the time axis spans the same
+inclusive interval, and the store has ~12x the hourly time steps (~701k). The
+same restart-marker machinery applies.
+
 The default inclusive UTC interval is `2017-12-31 00:00` through
 `2024-09-01 00:00`. The resulting `dataset/ngl_hourly.zarr` has dimensions
 `(time, station)` and float32 `ztd`/`zwd` variables in the original NGL unit

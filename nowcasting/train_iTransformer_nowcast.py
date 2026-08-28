@@ -3,7 +3,7 @@
 
 Task
 ----
-Use hourly NGL ZTD/ZWD of the nearest GNSS stations over T-6..T to nowcast
+Use 5-minute NGL ZTD/ZWD of the nearest GNSS stations over T-2h..T to nowcast
 the NCEP surface variables (p, slp, t2m, r2m, u10, v10) at time T.
 
 Temporal splits (UTC; [start, end) half-open ranges):
@@ -11,7 +11,8 @@ Temporal splits (UTC; [start, end) half-open ranges):
     val:   2023-11-01T00:00 <= T <  2024-03-01T00:00
     test:  2024-03-01T00:00 <= T <= last available hour
 
-Input tensor per sample: 7 x (2*max_neighbors + max_neighbors) channels, i.e.
+Input tensor per sample: (window_hours*60/ngl_step_minutes + 1) x (2*max_neighbors + max_neighbors)
+channels, i.e.
 ztd/zwd per neighbor (padded with zeros when missing/invalid) plus one 0/1
 validity-mask channel per neighbor. Target tensor: the 6 NCEP variables at T
 (z-scored with train statistics when --target-scale is on).
@@ -36,7 +37,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from numpy.lib.stride_tricks import sliding_window_view
 from torch.utils.data import DataLoader, Dataset
 
 import yaml
@@ -51,8 +51,6 @@ from utils.timefeatures import time_features  # noqa: E402
 
 NCEP_VARS = ["p", "slp", "t2m", "r2m", "u10", "v10"]
 NGL_VARS = ["ztd", "zwd"]
-WINDOW_HOURS = 7          # T-6 .. T
-NGL_OFFSET = 21           # ngl index = ncep index + 21: NGL zarr starts 2017-12-31T00:00, NCEP starts 2017-12-31T21:00
 TIME_FEATURES = 4         # freq='h' with embed='timeF'
 
 
@@ -67,9 +65,12 @@ def parse_utc(value: str):
 
 DEFAULTS: dict = {
     # data
-    "ngl_zarr": "dataset/ngl_hourly.zarr",
+    "ngl_zarr": "dataset/ngl_5min.zarr",
     "ncep_zarr": "dataset/ncep_hourly.zarr",
     "neighbors_parquet": "dataset/target_gnss_neighbors.parquet",
+    "target_stations_parquet": "dataset/target_stations.parquet",
+    "gnss_stations_parquet": "dataset/gnss_stations.parquet",
+    "ngl_step_minutes": 5,   # NGL time resolution (minutes); 1 = old hourly store
     # temporal splits
     "train_start": "2018-01-01T00:00",
     "train_end": "2023-11-01T00:00",
@@ -88,8 +89,11 @@ DEFAULTS: dict = {
     "load_full_arrays": False,
     "load_full_ncep": True,
     # model
-    "seq_len": WINDOW_HOURS,
+    "window_hours": 2,       # input window T-window_hours .. T (seq_len is derived)
     "pred_len": 1,
+    "spatial_enc": True,     # per-neighbor positional encoding (ENU + absolute heights)
+    "n_geo": 5,              # [dE_km, dN_km, dU_m, target_h_m, ngl_h_m]
+    "spatial_mlp_hidden": 128,
     "d_model": 128,
     "n_heads": 4,
     "e_layers": 2,
@@ -110,7 +114,8 @@ DEFAULTS: dict = {
     "out_root": "nowcasting/outputs",
 }
 
-PATH_KEYS = ("ngl_zarr", "ncep_zarr", "neighbors_parquet", "out_root")
+PATH_KEYS = ("ngl_zarr", "ncep_zarr", "neighbors_parquet",
+             "target_stations_parquet", "gnss_stations_parquet", "out_root")
 
 
 def _flatten(mapping: dict) -> dict:
@@ -192,6 +197,38 @@ def resolve_device(name: str) -> torch.device:
     return torch.device("cpu")
 
 
+_WGS84_A = 6378137.0
+_WGS84_E2 = 0.0066943799901413165  # WGS84 (f = 1/298.257223563)
+
+
+def _ecef(lat_deg: float, lon_deg: float, h_m: float) -> tuple[float, float, float]:
+    """Geodetic (WGS84) -> geocentric ECEF."""
+    lat, lon = np.deg2rad(lat_deg), np.deg2rad(lon_deg)
+    n = _WGS84_A / np.sqrt(1.0 - _WGS84_E2 * np.sin(lat) ** 2)
+    x = (n + h_m) * np.cos(lat) * np.cos(lon)
+    y = (n + h_m) * np.cos(lat) * np.sin(lon)
+    z = (n * (1.0 - _WGS84_E2) + h_m) * np.sin(lat)
+    return x, y, z
+
+
+def _enu(t_info: tuple[float, float, float], g_info: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Neighbor position in the target's local ENU frame (target = origin).
+
+    Returns (dE_km, dN_km, dU_m); dU uses the station metadata heights directly
+    (consistent with target_gnss_neighbors.height_difference_m).
+    """
+    tx, ty, tz = _ecef(*t_info)
+    gx, gy, gz = _ecef(*g_info)
+    dx, dy, dz = gx - tx, gy - ty, gz - tz
+    lat, lon = np.deg2rad(t_info[0]), np.deg2rad(t_info[1])
+    slat, clat = np.sin(lat), np.cos(lat)
+    slon, clon = np.sin(lon), np.cos(lon)
+    e = -slon * dx + clon * dy
+    n = -slat * clon * dx - slat * slon * dy + clat * dz
+    du = g_info[2] - t_info[2]
+    return float(e / 1000.0), float(n / 1000.0), float(du)
+
+
 class NowcastData:
     """Shared metadata, sample indices and cached per-station arrays."""
 
@@ -227,6 +264,18 @@ class NowcastData:
             self.ngl_time = self.ngl_time.tz_localize("UTC")
         if self.ncep_time.tz is None:
             self.ncep_time = self.ncep_time.tz_localize("UTC")
+        # Precompute timeF features once for the whole NGL time axis.
+        self.time_mark = time_features(self.ngl_time, freq="h").T.astype(np.float32)  # (T_ngl, 4)
+
+        # NGL resolution / window geometry (works for hourly or 5-minute stores).
+        self.ngl_step_minutes = int(args.ngl_step_minutes)
+        self.ngl_steps_per_hour = 60 // self.ngl_step_minutes
+        self.window_steps = int(args.window_hours * 60 // self.ngl_step_minutes) + 1
+        self.ngl_offset = int(
+            (self.ncep_time[0] - self.ngl_time[0]).total_seconds() // 60 // self.ngl_step_minutes
+        )
+        print(f"[data] ngl_step={self.ngl_step_minutes}min window={self.window_steps} steps "
+              f"(T-{args.window_hours}h..T) ngl_offset={self.ngl_offset} steps", flush=True)
         self.ngl_col = {str(s): i for i, s in enumerate(np.asarray(self.ngl["station"][:]))}
         self.ncep_col = {str(s): i for i, s in enumerate(np.asarray(self.ncep["station"][:]))}
 
@@ -234,6 +283,15 @@ class NowcastData:
         nb = pd.read_parquet(args.neighbors_parquet)
         nb = nb[nb["rank"] <= args.max_neighbors].sort_values(["target_station_id", "rank"])   # 从邻近站表里筛选出前 N 个邻近站，并按（目标站, 排名）排好序
         neighbor_ids = nb.groupby("target_station_id")["gnss_station_id"].apply(list).to_dict()
+
+        # Station geometry for the positional encoding: per (target, neighbor)
+        # relative ENU position (target as origin) plus absolute heights.
+        target_st = pd.read_parquet(args.target_stations_parquet)
+        gnss_st = pd.read_parquet(args.gnss_stations_parquet)
+        t_geo = {str(s): (float(r.lat), float(r.lon), float(r.height_m))
+                 for s, r in target_st.set_index("target_station_id").iterrows()}
+        g_geo = {str(s): (float(r.lat), float(r.lon), float(r.height_m))
+                 for s, r in gnss_st.set_index("gnss_station_id").iterrows()}
 
         candidates = sorted(
             sid for sid, ids in neighbor_ids.items()
@@ -249,6 +307,7 @@ class NowcastData:
         self.station_ngl: list[tuple[np.ndarray, np.ndarray]] = []  # (ztd (T_ngl,k), zwd)
         self.station_ncep_col: list[int] = []
         self.target: list[np.ndarray] = []  # (T_ncep, n_vars) float32
+        self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo) pre-normalization
 
         for si, sid in enumerate(selected):
             if si % 10 == 0:
@@ -259,6 +318,15 @@ class NowcastData:
             cols = [self.ngl_col[g] for g in neighbor_ids[sid][: args.max_neighbors]]
             if any(c is None for c in cols) or not cols:
                 continue
+            row = np.zeros((args.max_neighbors, args.n_geo), dtype=np.float32)
+            t_info = t_geo.get(sid)
+            for j, gid in enumerate(neighbor_ids[sid][: args.max_neighbors]):
+                g_info = g_geo.get(gid)
+                if t_info is None or g_info is None:
+                    continue
+                de, dn, du = _enu(t_info, g_info)
+                row[j] = (de, dn, du, t_info[2], g_info[2])
+            self.station_geo_raw.append(row)
             if self.ngl_full is not None:
                 ztd = self.ngl_full["ztd"][:, cols].astype(np.float32, copy=False)
                 zwd = self.ngl_full["zwd"][:, cols].astype(np.float32, copy=False)
@@ -277,6 +345,21 @@ class NowcastData:
         self.n_stations = len(self.station_ids)
         if not self.station_ids:
             raise SystemExit("no usable target stations (check --station-offset/--stations)")
+
+        # Normalize geometry over real (target, neighbor) pairs; padding stays zero.
+        if args.spatial_enc:
+            stacked = np.stack(self.station_geo_raw, axis=0)          # (S, max_k, n_geo)
+            valid_geo = np.abs(stacked).sum(axis=2) > 0               # nonzero rows = real pairs
+            flat = stacked[valid_geo]
+            self.geo_mean = flat.mean(axis=0).astype(np.float32)
+            self.geo_std = (flat.std(axis=0) + 1e-6).astype(np.float32)
+            self.station_geo_arr = ((stacked - self.geo_mean) / self.geo_std * valid_geo[..., None]).astype(np.float32)
+        else:
+            self.geo_mean = np.zeros(args.n_geo, dtype=np.float32)
+            self.geo_std = np.ones(args.n_geo, dtype=np.float32)
+            self.station_geo_arr = np.zeros((self.n_stations, args.max_neighbors, args.n_geo), dtype=np.float32)
+        print(f"[data] station_geo={self.station_geo_arr.shape} "
+              f"mean={self.geo_mean.tolist()} std={self.geo_std.tolist()}", flush=True)
 
         self.split_ranges = {
             "train": (parse_utc(args.train_start), parse_utc(args.train_end)),
@@ -300,17 +383,25 @@ class NowcastData:
         args = self.args
         n_ncep = len(self.ncep_time)
         n_ngl = len(self.ngl_time)
-        win_slide = WINDOW_HOURS
+        win_slide = self.window_steps
+        # ncep index t needs ngl window [t*sph+off-(win-1), t*sph+off],
+        # i.e. sliding-window start k = t*sph+off-(win-1).
+        win_start = (
+            np.arange(n_ncep, dtype=np.int64) * self.ngl_steps_per_hour
+            + self.ngl_offset
+            - (win_slide - 1)
+        )
         for i, (ztd, zwd) in enumerate(self.station_ngl):
             good = np.isfinite(ztd) & np.isfinite(zwd)  # (T_ngl, k)
-            win_good = sliding_window_view(good, win_slide, axis=0).all(axis=2)  # (T_ngl-6, k)
-            count_valid = win_good.sum(axis=1).astype(np.int16)
-            # ncep index t needs the ngl window [t+NGL_OFFSET-6, t+NGL_OFFSET] (T-6..T).
-            # sliding_window_view index k covers ngl [k, k+6], so k = t + NGL_OFFSET - 6.
-            win_start = NGL_OFFSET - (WINDOW_HOURS - 1)  # 21 - 6 = 15
+            # Window fully-finite count via cumulative sums (equivalent to
+            # sliding_window_view(...).all(), but much faster at 5-minute scale).
+            cum = np.zeros((good.shape[0] + 1, good.shape[1]), dtype=np.int64)
+            np.cumsum(good, axis=0, out=cum[1:])
             n_valid = np.zeros(n_ncep, dtype=np.int16)
-            n_len = min(n_ncep, len(count_valid) - win_start)
-            n_valid[:n_len] = count_valid[win_start:win_start + n_len]
+            ok = (win_start >= 0) & (win_start + win_slide <= good.shape[0])
+            ws = win_start[ok]
+            full = (cum[ws + win_slide] - cum[ws]) == win_slide  # (n_ok, k)
+            n_valid[ok] = full.sum(axis=1)
             # Target validity: all 6 NCEP variables at T must be finite (real observations).
             tgt_ok = np.isfinite(self.target[i]).all(axis=1)  # (T_ncep,)
             for flag in self.samples:
@@ -318,6 +409,8 @@ class NowcastData:
                 keep = idx[(n_valid[idx] >= args.min_valid_neighbors) & tgt_ok[idx]]
                 stride = {"train": args.hour_stride, "val": args.val_stride, "test": args.test_stride}[flag]
                 self.samples[flag].append(keep[::stride])
+            if (i + 1) % 100 == 0 or i + 1 == len(self.station_ngl):
+                print(f"[data] sample-index {i + 1}/{len(self.station_ngl)}", flush=True)
 
     def _train_scaler(self) -> tuple[np.ndarray, np.ndarray]:
         if not self.args.target_scale:
@@ -347,11 +440,11 @@ class NowcastData:
         k = ztd.shape[1]
         max_k = self.args.max_neighbors
         n_chan = 2 * max_k + max_k
-        g0 = t - (WINDOW_HOURS - 1) + NGL_OFFSET   # first ngl index of the window
-        g1 = g0 + WINDOW_HOURS                     # exclusive
+        g0 = t * self.ngl_steps_per_hour + self.ngl_offset - (self.window_steps - 1)
+        g1 = g0 + self.window_steps                # exclusive
         wz = np.isfinite(ztd[g0:g1]) & np.isfinite(zwd[g0:g1])  # (7, k)
         valid = wz.all(axis=0)
-        x = np.zeros((WINDOW_HOURS, n_chan), dtype=np.float32)
+        x = np.zeros((self.window_steps, n_chan), dtype=np.float32)
         for j in range(k):
             if valid[j]:
                 x[:, 2 * j] = ztd[g0:g1, j]
@@ -359,9 +452,13 @@ class NowcastData:
             x[:, 2 * max_k + j] = 1.0 if valid[j] else 0.0
         y = self.target[station_pos][t].astype(np.float32)
         y = np.nan_to_num((y - self.ym) / self.ys, nan=0.0).reshape(1, len(NCEP_VARS))
-        mark = time_features(self.ngl_time[g0:g1], freq="h").T.astype(np.float32)  # (7, 4)
+        mark = self.time_mark[g0:g1]  # (7, 4) precomputed
         y_mark = np.zeros((1, TIME_FEATURES), dtype=np.float32)
-        return x, y, mark, y_mark
+        # Positional encoding: per-neighbor ENU + heights, gated by per-sample validity.
+        v = np.zeros(self.args.max_neighbors, dtype=np.float32)
+        v[:k] = valid.astype(np.float32)
+        x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo) float32
+        return x, y, mark, y_mark, x_geo
 
 
 class GNSSNowcastDataset(Dataset):
@@ -398,6 +495,10 @@ def make_model_config(args: argparse.Namespace) -> argparse.Namespace:
     cfg.activation = args.activation
     cfg.factor = 1
     cfg.separate_output = True
+    cfg.spatial_enc = bool(getattr(args, "spatial_enc", False))
+    cfg.n_geo = int(getattr(args, "n_geo", 5))
+    cfg.spatial_mlp_hidden = int(getattr(args, "spatial_mlp_hidden", args.d_model))
+    cfg.max_neighbors = int(args.max_neighbors)
     return cfg
 
 
@@ -419,13 +520,14 @@ def make_loader(data: NowcastData, flag: str, args: argparse.Namespace, shuffle:
 def evaluate(model: nn.Module, loader: DataLoader, cfg, criterion, device) -> float:
     model.eval()
     losses = []
-    for bx, by, bxm, bym in loader:
+    for bx, by, bxm, bym, bxg in loader:
         bx = bx.float().to(device)
         by = by.float().to(device)
         bxm = bxm.float().to(device)
+        bxg = bxg.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
         y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
-        out = model(bx, bxm, dec_inp, y_mark)
+        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
         loss = criterion(out[:, -cfg.pred_len:, :], by[:, -cfg.pred_len:, :])
         losses.append(loss.item())
     model.train()
@@ -443,6 +545,8 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
 
     setting = f"{args.model_id}_s{data.n_stations}_off{args.station_offset}_h{args.hour_stride}" \
               f"_dm{args.d_model}_el{args.e_layers}_nh{args.n_heads}_df{args.d_ff}"
+    if args.spatial_enc:
+        setting += "_sp"
     out_dir = args.out_root / setting
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "config_used.yaml", "w", encoding="utf-8") as f:
@@ -451,18 +555,21 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
 
     best_val = float("inf")
     patience = 0
+    train_losses: list[float] = []
+    val_losses: list[float] = []
     for epoch in range(1, args.epochs + 1):
         model.train()
         ep_losses = []
         t0 = time.time()
-        for step, (bx, by, bxm, bym) in enumerate(train_loader, 1):
+        for step, (bx, by, bxm, bym, bxg) in enumerate(train_loader, 1):
             bx = bx.float().to(device)
             by = by.float().to(device)
             bxm = bxm.float().to(device)
+            bxg = bxg.float().to(device)
             dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
             y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
             optimizer.zero_grad()
-            out = model(bx, bxm, dec_inp, y_mark)
+            out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
             loss = criterion(out[:, -cfg.pred_len:, :], by[:, -cfg.pred_len:, :])
             loss.backward()
             optimizer.step()
@@ -472,8 +579,13 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
 
         train_loss = float(np.mean(ep_losses))
         val_loss = evaluate(model, val_loader, cfg, criterion, device)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
         print(f"[epoch {epoch}] train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
               f"({time.time() - t0:.1f}s)", flush=True)
+        with open(out_dir / "loss_curve.json", "w", encoding="utf-8") as f:
+            json.dump({"train": train_losses, "val": val_losses}, f, indent=2)
+        plot_loss_curve(train_losses, val_losses, out_dir)
 
         if val_loss < best_val:
             best_val = val_loss
@@ -500,12 +612,13 @@ def test(args: argparse.Namespace, data: NowcastData, model: nn.Module, cfg, out
 
     preds_norm, trues_norm = [], []
     model.eval()
-    for bx, by, bxm, bym in test_loader:
+    for bx, by, bxm, bym, bxg in test_loader:
         bx = bx.float().to(device)
         bxm = bxm.float().to(device)
+        bxg = bxg.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
         y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
-        out = model(bx, bxm, dec_inp, y_mark)
+        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
         preds_norm.append(out[:, -cfg.pred_len:, :].detach().cpu().numpy())
         trues_norm.append(by[:, -cfg.pred_len:, :].numpy())
     preds_norm = np.concatenate(preds_norm, axis=0)
@@ -530,14 +643,100 @@ def test(args: argparse.Namespace, data: NowcastData, model: nn.Module, cfg, out
 
     np.savez(out_dir / "test_predictions.npz", preds=preds, trues=trues,
              preds_norm=preds_norm, trues_norm=trues_norm, variables=np.asarray(NCEP_VARS))
+    plot_test_analysis(preds, trues, NCEP_VARS, out_dir)
     with open(out_dir / "test_metrics.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
 
 
+def plot_loss_curve(train_losses: list[float], val_losses: list[float], out_dir: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    epochs = list(range(1, len(train_losses) + 1))
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(epochs, train_losses, "o-", label="train")
+    ax.plot(epochs, val_losses, "s-", label="val")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("MSE loss (normalized)")
+    ax.set_title("Train / validation loss per epoch")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_dir / "loss_curve.png", dpi=150)
+    plt.close(fig)
+
+
+def plot_test_analysis(preds, trues, names: list[str], out_dir: Path):
+    """Scatter, error histogram and time-series snippet for the test predictions."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    preds = np.asarray(preds)[:, 0, :]  # (N, V)
+    trues = np.asarray(trues)[:, 0, :]
+    n_vars = len(names)
+    n_cols = 3
+    n_rows = (n_vars + n_cols - 1) // n_cols
+
+    # 1) scatter pred vs truth with 1:1 line and R2
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 9))
+    for j, (ax, name) in enumerate(zip(np.ravel(axes), names)):
+        t, pr = trues[:, j], preds[:, j]
+        ax.scatter(t, pr, s=2, alpha=0.3, rasterized=True)
+        lo = float(min(t.min(), pr.min()))
+        hi = float(max(t.max(), pr.max()))
+        ax.plot([lo, hi], [lo, hi], "r--", lw=1)
+        ss_res = float(((t - pr) ** 2).sum())
+        ss_tot = float(((t - t.mean()) ** 2).sum())
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+        ax.set_title(f"{name}  R2={r2:.3f}")
+        ax.set_xlabel("truth")
+        ax.set_ylabel("pred")
+    for ax in np.ravel(axes)[n_vars:]:
+        ax.set_visible(False)
+    fig.suptitle("Test set: prediction vs truth (best checkpoint)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "test_scatter.png", dpi=150)
+    plt.close(fig)
+
+    # 2) error histograms
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 9))
+    for j, (ax, name) in enumerate(zip(np.ravel(axes), names)):
+        err = trues[:, j] - preds[:, j]
+        ax.hist(err, bins=100, alpha=0.7)
+        ax.axvline(0, color="r", lw=1)
+        ax.set_title(f"{name}  err std={err.std():.3f}")
+        ax.set_xlabel("error (truth - pred)")
+    for ax in np.ravel(axes)[n_vars:]:
+        ax.set_visible(False)
+    fig.suptitle("Test set: prediction error distribution")
+    fig.tight_layout()
+    fig.savefig(out_dir / "test_error_hist.png", dpi=150)
+    plt.close(fig)
+
+    # 3) time-series snippet (first samples in flattened station order)
+    m = min(300, len(trues))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 8))
+    for j, (ax, name) in enumerate(zip(np.ravel(axes), names)):
+        ax.plot(trues[:m, j], label="truth", lw=1)
+        ax.plot(preds[:m, j], label="pred", lw=1, alpha=0.8)
+        ax.set_title(name)
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+    for ax in np.ravel(axes)[n_vars:]:
+        ax.set_visible(False)
+    fig.suptitle(f"Test set: first {m} samples per variable (best checkpoint)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "test_timeseries.png", dpi=150)
+    plt.close(fig)
+
+
 def main():
     cli = build_cli_parser().parse_args()
     args = load_config(cli.config, cli.set)
+    args.seq_len = int(args.window_hours * 60 // args.ngl_step_minutes) + 1
     print("effective config:")
     print(json.dumps(vars(args), indent=2, default=str))
     random.seed(args.seed)

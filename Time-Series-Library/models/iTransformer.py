@@ -22,6 +22,20 @@ class Model(nn.Module):
         # enabled via configs.separate_output, a final linear layer maps the
         # input-token projections to the target variates.
         self.separate_output = getattr(configs, "separate_output", False)
+        # Optional per-neighbor spatial (positional) encoding: geometry of each
+        # GNSS neighbor relative to the target station (ENU + heights) is
+        # embedded and added to that neighbor's input tokens before the encoder.
+        self.spatial_enc = bool(getattr(configs, "spatial_enc", False))
+        self.max_neighbors = int(getattr(configs, "max_neighbors", 0))
+        self.channels_per_neighbor = (int(getattr(configs, "enc_in", 0)) // self.max_neighbors) if self.max_neighbors else 3
+        if self.spatial_enc:
+            n_geo = int(getattr(configs, "n_geo", 5))
+            mlp_hidden = int(getattr(configs, "spatial_mlp_hidden", configs.d_model))
+            self.spatial_embed = nn.Sequential(
+                nn.Linear(n_geo, mlp_hidden),
+                nn.GELU(),
+                nn.Linear(mlp_hidden, configs.d_model),
+            )
         # Embedding
         self.enc_embedding = DataEmbedding_inverted(configs.seq_len, configs.d_model, configs.embed, configs.freq,
                                                     configs.dropout)
@@ -54,7 +68,7 @@ class Model(nn.Module):
             self.dropout = nn.Dropout(configs.dropout)
             self.projection = nn.Linear(configs.d_model * configs.enc_in, configs.num_class)
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, x_geo=None):
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
@@ -65,6 +79,13 @@ class Model(nn.Module):
 
         # Embedding
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        if self.spatial_enc and x_geo is not None:
+            # x_geo: (B, max_neighbors, n_geo) -> (B, max_neighbors, d_model);
+            # each neighbor contributes the same embedding to its ztd/zwd/mask tokens.
+            emb = self.spatial_embed(x_geo)
+            emb = emb.unsqueeze(2).expand(-1, -1, self.channels_per_neighbor, -1)
+            emb = emb.reshape(emb.shape[0], -1, emb.shape[-1])
+            enc_out[:, : emb.shape[1]] = enc_out[:, : emb.shape[1]] + emb
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
 
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
@@ -129,9 +150,9 @@ class Model(nn.Module):
         output = self.projection(output)  # (batch_size, num_classes)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, x_geo=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, x_geo=x_geo)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)

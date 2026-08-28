@@ -2,10 +2,10 @@
 
 ## Task
 
-Hourly nowcasting: use the NGL zenith tropospheric delays (**ZTD** / **ZWD**) of the
-nearest GNSS stations over the 7-hour window **T-6 .. T** to predict the NCEP
-surface observations (**p, slp, t2m, r2m, u10, v10**) at time **T** for each
-target surface station.
+Nowcasting: use **5-minute** NGL zenith tropospheric delays (**ZTD** / **ZWD**) of
+the nearest GNSS stations over the window **T-2h .. T** (25 five-minute steps) to
+predict the NCEP surface observations (**p, slp, t2m, r2m, u10, v10**) at time **T**
+for each target surface station. The NCEP targets stay hourly.
 
 Model: `Time-Series-Library/models/iTransformer.py` (iTransformer, adapted,
 see below).
@@ -24,13 +24,18 @@ Boundaries are configurable via `--train-start/--train-end/--val-start/--val-end
 
 Per sample:
 
-- Input `x`: `(7, 15)` float32
+- Input `x`: `(seq_len, 15)` float32, where `seq_len = window_hours*60/ngl_step_minutes + 1` (default 25)
   - channels `0..9`: `ztd`, `zwd` of the up-to-5 nearest GNSS stations (rank 1..5,
     from `dataset/target_gnss_neighbors.parquet`), zero-padded when a station is
-    missing from the 7-hour window;
+    missing from the input window;
   - channels `10..14`: 0/1 validity mask per neighbor (1 = the neighbor has finite
-    ZTD **and** ZWD at all 7 hours).
-- Time marks `x_mark`: `(7, 4)` timeF features (hour/day-of-week/day-of-month/day-of-year).
+    ZTD **and** ZWD at all seq_len window steps).
+- Time marks `x_mark`: `(seq_len, 4)` timeF features (hour/day-of-week/day-of-month/day-of-year).
+- Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, 5)` per-sample,
+  `[dE_km, dN_km, dU_m, target_h_m, ngl_h_m]` per neighbor — the neighbor position in the
+  target's local ENU frame (target = origin) plus both absolute heights, z-scored with
+  train-pair statistics and zeroed for invalid/missing neighbors. A small MLP embeds each
+  neighbor's geometry and adds it to that neighbor's ztd/zwd/mask tokens before the encoder.
 - Target `y`: `(1, 6)` NCEP variables at T, z-scored with train-split statistics
   (disable with `--no-target-scale`).
 
@@ -47,15 +52,23 @@ valid and all 6 target values are finite.
 | `nowcasting/outputs/<setting>/config_used.yaml` | effective config of the run (reproducibility) |
 | `nowcasting/outputs/<setting>/test_predictions.npz` | preds/trues (physical units) and normalized copies |
 | `nowcasting/outputs/<setting>/test_metrics.json` | per-variable MAE/MSE/RMSE on the test split |
+| `nowcasting/outputs/<setting>/loss_curve.json` / `loss_curve.png` | per-epoch train/val loss + curve |
+| `nowcasting/outputs/<setting>/test_scatter.png` | pred vs truth scatter (per variable, R²) |
+| `nowcasting/outputs/<setting>/test_error_hist.png` | prediction error histograms |
+| `nowcasting/outputs/<setting>/test_timeseries.png` | pred vs truth time-series snippet |
 | `Time-Series-Library/models/iTransformer.py` | model (adapted, see below) |
 
 ## Model adaptation
 
-`iTransformer.py` keeps its original behaviour by default and gains one optional
-feature: when `configs.separate_output` is set (our script sets it), a final
+`iTransformer.py` keeps its original behaviour by default and gains two optional
+features. First: when `configs.separate_output` is set (our script sets it), a final
 `nn.Linear(enc_in, c_out)` maps the per-input-variate projections to the target
 variates, and the non-stationary de-normalization is skipped because the output
-channels are not the input channels. All other tasks/runs are unchanged.
+channels are not the input channels. Second: when `configs.spatial_enc` is set,
+a small MLP (`Linear(n_geo→d_model)→GELU→Linear(d_model→d_model)`) embeds the
+per-neighbor ENU/height vector and the result is added to that neighbor's
+ztd/zwd/mask tokens before the encoder; the output head and token layout are
+unchanged. All other tasks/runs are unchanged.
 
 ## How to run
 

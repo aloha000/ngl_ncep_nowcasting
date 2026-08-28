@@ -4,9 +4,12 @@
 #   python nowcasting/train_iTransformer_nowcast.py --set stations=128 --set epochs=20
 
 data:
-  ngl_zarr: dataset/ngl_hourly.zarr          # hourly NGL ZTD/ZWD store
+  ngl_zarr: dataset/ngl_5min.zarr            # 5-minute NGL ZTD/ZWD store
   ncep_zarr: dataset/ncep_hourly.zarr        # hourly NCEP surface store
   neighbors_parquet: dataset/target_gnss_neighbors.parquet  # rank-ordered GNSS neighbors per target
+  target_stations_parquet: dataset/target_stations.parquet  # target station lat/lon/height_m
+  gnss_stations_parquet: dataset/gnss_stations.parquet      # GNSS station lat/lon/height_m
+  ngl_step_minutes: 5                        # NGL time resolution in minutes (1 = old hourly store)
 
 splits:            # UTC, half-open [start, end); empty end = end of data
   train_start: "2018-01-01T00:00"
@@ -28,8 +31,11 @@ sampling:
   load_full_ncep: true         # load NCEP variables row-major into RAM (~3.3GB)
 
 model:
-  seq_len: 7                   # input window T-6 .. T
+  window_hours: 2              # input window T-window_hours .. T (5min -> 25 steps); seq_len derived
   pred_len: 1                  # nowcast horizon
+  spatial_enc: true            # per-neighbor positional encoding (ENU + heights), added to neighbor tokens
+  n_geo: 5                     # [dE_km, dN_km, dU_m, target_h_m, ngl_h_m]
+  spatial_mlp_hidden: 128      # MLP hidden width for the spatial embedding
   d_model: 128
   n_heads: 4
   e_layers: 2
