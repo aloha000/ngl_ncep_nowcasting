@@ -30,12 +30,21 @@ Per sample:
     missing from the input window;
   - channels `10..14`: 0/1 validity mask per neighbor (1 = the neighbor has finite
     ZTD **and** ZWD at all seq_len window steps).
-- Time marks `x_mark`: `(seq_len, 4)` timeF features (hour/day-of-week/day-of-month/day-of-year).
-- Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, 5)` per-sample,
-  `[dE_km, dN_km, dU_m, target_h_m, ngl_h_m]` per neighbor — the neighbor position in the
-  target's local ENU frame (target = origin) plus both absolute heights, z-scored with
+- Time marks `x_mark` (optional): `time_encoding: none` passes no marks
+  (`x_mark=None`, 15 tokens); `hour_sincos` adds `[sin(2πh/24), cos(2πh/24)]`
+  (2 channels); `sincos` adds sin/cos pairs for hour/day-of-week/day-of-month/
+  day-of-year (8 channels); `linear` uses TSL timeF features at `model.time_freq`
+  resolution (`5min`: minute-of-hour/hour/day-of-week/day-of-month/day-of-year).
+- Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, 4)` per-sample,
+  `[dE_km, dN_km, dU_m, ngl_h_m]` per neighbor — the neighbor position in the target's local
+  ENU frame (target = origin) plus the neighbor's absolute height, z-scored with
   train-pair statistics and zeroed for invalid/missing neighbors. A small MLP embeds each
   neighbor's geometry and adds it to that neighbor's ztd/zwd/mask tokens before the encoder.
+- Target-station feature `x_tgt` (when `model.target_h_feat: true`): a per-sample z-scored
+  scalar (the target station's absolute height, train-station statistics), concatenated to
+  the token outputs right before the `separate_output` linear layer. Kept out of the input
+  variates on purpose: per-variate instance normalization would zero out any channel that
+  is constant across the window.
 - Target `y`: `(1, 6)` NCEP variables at T, z-scored with train-split statistics
   (disable with `--no-target-scale`).
 
@@ -48,6 +57,7 @@ valid and all 6 target values are finite.
 | --- | --- |
 | `nowcasting/train_iTransformer_nowcast.py` | data index + training + testing entry point |
 | `nowcasting/config.yaml` | all run parameters (data paths, splits, sampling, model, training, run) |
+| `nowcasting/EXPERIMENTS.md` | experiment log and conclusions (2026-08-27 ~ 08-28) |
 | `nowcasting/outputs/<setting>/checkpoint.pth` | best checkpoint (by val loss) |
 | `nowcasting/outputs/<setting>/config_used.yaml` | effective config of the run (reproducibility) |
 | `nowcasting/outputs/<setting>/test_predictions.npz` | preds/trues (physical units) and normalized copies |
@@ -68,7 +78,10 @@ channels are not the input channels. Second: when `configs.spatial_enc` is set,
 a small MLP (`Linear(n_geo→d_model)→GELU→Linear(d_model→d_model)`) embeds the
 per-neighbor ENU/height vector and the result is added to that neighbor's
 ztd/zwd/mask tokens before the encoder; the output head and token layout are
-unchanged. All other tasks/runs are unchanged.
+unchanged. Third: when `configs.target_h_feat` is set, the per-sample z-scored target-station
+height is concatenated as one extra channel to the token outputs just before the
+`separate_output` linear layer (its input becomes `enc_in + 1`), so the final layer learns a
+direct per-variable linear height term. All other tasks/runs are unchanged.
 
 ## How to run
 

@@ -1,0 +1,1169 @@
+effective config:
+{
+  "ngl_zarr": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ngl_5min.zarr",
+  "ncep_zarr": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ncep_hourly.zarr",
+  "neighbors_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/target_gnss_neighbors.parquet",
+  "target_stations_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/target_stations.parquet",
+  "gnss_stations_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/gnss_stations.parquet",
+  "ngl_step_minutes": 5,
+  "train_start": "2018-01-01T00:00",
+  "train_end": "2023-11-01T00:00",
+  "val_start": "2023-11-01T00:00",
+  "val_end": "2024-03-01T00:00",
+  "test_start": "2024-03-01T00:00",
+  "test_end": "",
+  "stations": 64,
+  "station_offset": 0,
+  "max_neighbors": 5,
+  "min_valid_neighbors": 3,
+  "hour_stride": 6,
+  "val_stride": 1,
+  "test_stride": 1,
+  "load_full_arrays": false,
+  "load_full_ncep": true,
+  "window_hours": 2,
+  "pred_len": 1,
+  "spatial_enc": true,
+  "n_geo": 5,
+  "spatial_mlp_hidden": 128,
+  "d_model": 128,
+  "n_heads": 4,
+  "e_layers": 2,
+  "d_ff": 512,
+  "dropout": 0.1,
+  "activation": "gelu",
+  "epochs": 20,
+  "batch_size": 256,
+  "learning_rate": 0.001,
+  "patience": 3,
+  "num_workers": 0,
+  "seed": 2021,
+  "target_scale": true,
+  "device": "auto",
+  "model_id": "model_id=all_stations_v1_5min_20epoch",
+  "out_root": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/nowcasting/outputs",
+  "seq_len": 25
+}
+device=cuda:0  zarr ngl=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ngl_5min.zarr  ncep=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ncep_hourly.zarr
+[data] loading full NCEP arrays row-major ...
+  loaded p (58056, 2331)
+  loaded slp (58056, 2331)
+  loaded t2m (58056, 2331)
+  loaded r2m (58056, 2331)
+  loaded u10 (58056, 2331)
+  loaded v10 (58056, 2331)
+[data] ngl_step=5min window=25 steps (T-2h..T) ngl_offset=252 steps
+[data] loading station 0/64 (ncep_00019)
+[data] loading station 10/64 (ncep_00029)
+[data] loading station 20/64 (ncep_00039)
+[data] loading station 30/64 (ncep_00050)
+[data] loading station 40/64 (ncep_00061)
+[data] loading station 50/64 (ncep_00071)
+[data] loading station 60/64 (ncep_00081)
+[data] station_geo=(64, 5, 5) mean=[0.9799492955207825, -0.822749137878418, -154.06346130371094, 147.2252655029297, -6.838338375091553] std=[14.245576858520508, 16.737096786499023, 207.83270263671875, 228.67343139648438, 23.69436264038086]
+[data] sample-index 64/64
+[train] stations=64 samples=103988
+[val] stations=64 samples=31731
+[test] stations=64 samples=43007
+data index built in 187.4s
+[train] batches/epoch=407  [val] batches=124
+  epoch 1 step 200/407 loss 1.031418
+  epoch 1 step 400/407 loss 0.917136
+[epoch 1] train_loss=1.053726 val_loss=0.961447 (15.3s)
+  saved best checkpoint (val_loss=0.961447)
+  epoch 2 step 200/407 loss 0.978122
+  epoch 2 step 400/407 loss 0.994481
+[epoch 2] train_loss=0.923848 val_loss=0.975810 (10.4s)
+  epoch 3 step 200/407 loss 0.828660
+  epoch 3 step 400/407 loss 0.861381
+[epoch 3] train_loss=0.894835 val_loss=0.944322 (10.8s)
+  saved best checkpoint (val_loss=0.944322)
+  epoch 4 step 200/407 loss 0.797755
+  epoch 4 step 400/407 loss 0.840616
+[epoch 4] train_loss=0.882323 val_loss=0.952127 (11.6s)
+  epoch 5 step 200/407 loss 0.858367
+  epoch 5 step 400/407 loss 0.795775
+[epoch 5] train_loss=0.871669 val_loss=0.967760 (12.6s)
+  epoch 6 step 200/407 loss 0.917403
+  epoch 6 step 400/407 loss 0.841485
+[epoch 6] train_loss=0.865962 val_loss=0.969684 (11.4s)
+  early stopping after 6 epochs
+loaded best checkpoint from epoch 3 (val_loss=0.944322)
+[test] samples=43007 batches=168
+{
+  "variables": [
+    "p",
+    "slp",
+    "t2m",
+    "r2m",
+    "u10",
+    "v10"
+  ],
+  "per_variable": [
+    {
+      "variable": "p",
+      "mae": 3.3081555366516113,
+      "mse": 17.751632690429688,
+      "rmse": 4.213268646838187
+    },
+    {
+      "variable": "slp",
+      "mae": 3.1861276626586914,
+      "mse": 16.2203369140625,
+      "rmse": 4.027447940577569
+    },
+    {
+      "variable": "t2m",
+      "mae": 3.998530864715576,
+      "mse": 22.154216766357422,
+      "rmse": 4.706826613160657
+    },
+    {
+      "variable": "r2m",
+      "mae": 9.602853775024414,
+      "mse": 160.62530517578125,
+      "rmse": 12.673803895270797
+    },
+    {
+      "variable": "u10",
+      "mae": 2.5655601024627686,
+      "mse": 10.39232063293457,
+      "rmse": 3.223712244127036
+    },
+    {
+      "variable": "v10",
+      "mae": 2.2328948974609375,
+      "mse": 7.896054744720459,
+      "rmse": 2.8099919474476183
+    }
+  ],
+  "overall": {
+    "mae": 4.149020671844482,
+    "mse": 39.173309326171875,
+    "rmse": 6.258858680725098
+  },
+  "n_samples": 43007
+}
+outputs saved under /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/nowcasting/outputs/model_id=all_stations_v1_5min_20epoch_s64_off0_h6_dm128_el2_nh4_df512_sp
+effective config:
+{
+  "ngl_zarr": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ngl_5min.zarr",
+  "ncep_zarr": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ncep_hourly.zarr",
+  "neighbors_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/target_gnss_neighbors.parquet",
+  "target_stations_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/target_stations.parquet",
+  "gnss_stations_parquet": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/gnss_stations.parquet",
+  "ngl_step_minutes": 5,
+  "train_start": "2018-01-01T00:00",
+  "train_end": "2023-11-01T00:00",
+  "val_start": "2023-11-01T00:00",
+  "val_end": "2024-03-01T00:00",
+  "test_start": "2024-03-01T00:00",
+  "test_end": "",
+  "stations": 0,
+  "station_offset": 0,
+  "max_neighbors": 5,
+  "min_valid_neighbors": 3,
+  "hour_stride": 6,
+  "val_stride": 1,
+  "test_stride": 1,
+  "load_full_arrays": false,
+  "load_full_ncep": true,
+  "window_hours": 2,
+  "pred_len": 1,
+  "spatial_enc": true,
+  "n_geo": 5,
+  "spatial_mlp_hidden": 128,
+  "d_model": 128,
+  "n_heads": 4,
+  "e_layers": 2,
+  "d_ff": 512,
+  "dropout": 0.1,
+  "activation": "gelu",
+  "epochs": 20,
+  "batch_size": 256,
+  "learning_rate": 0.001,
+  "patience": 3,
+  "num_workers": 0,
+  "seed": 2021,
+  "target_scale": true,
+  "device": "auto",
+  "model_id": "model_id=all_stations_v1_5min_20epoch",
+  "out_root": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/nowcasting/outputs",
+  "seq_len": 25
+}
+device=cuda:0  zarr ngl=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ngl_5min.zarr  ncep=/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/dataset/ncep_hourly.zarr
+[data] loading full NCEP arrays row-major ...
+  loaded p (58056, 2331)
+  loaded slp (58056, 2331)
+  loaded t2m (58056, 2331)
+  loaded r2m (58056, 2331)
+  loaded u10 (58056, 2331)
+  loaded v10 (58056, 2331)
+[data] ngl_step=5min window=25 steps (T-2h..T) ngl_offset=252 steps
+[data] loading station 0/1915 (ncep_00019)
+[data] loading station 10/1915 (ncep_00029)
+[data] loading station 20/1915 (ncep_00039)
+[data] loading station 30/1915 (ncep_00050)
+[data] loading station 40/1915 (ncep_00061)
+[data] loading station 50/1915 (ncep_00071)
+[data] loading station 60/1915 (ncep_00081)
+[data] loading station 70/1915 (ncep_00094)
+[data] loading station 80/1915 (ncep_00105)
+[data] loading station 90/1915 (ncep_00115)
+[data] loading station 100/1915 (ncep_00127)
+[data] loading station 110/1915 (ncep_00137)
+[data] loading station 120/1915 (ncep_00149)
+[data] loading station 130/1915 (ncep_00159)
+[data] loading station 140/1915 (ncep_00170)
+[data] loading station 150/1915 (ncep_00181)
+[data] loading station 160/1915 (ncep_00191)
+[data] loading station 170/1915 (ncep_00201)
+[data] loading station 180/1915 (ncep_00211)
+[data] loading station 190/1915 (ncep_00221)
+[data] loading station 200/1915 (ncep_00231)
+[data] loading station 210/1915 (ncep_00242)
+[data] loading station 220/1915 (ncep_00253)
+[data] loading station 230/1915 (ncep_00265)
+[data] loading station 240/1915 (ncep_00277)
+[data] loading station 250/1915 (ncep_00294)
+[data] loading station 260/1915 (ncep_00308)
+[data] loading station 270/1915 (ncep_00319)
+[data] loading station 280/1915 (ncep_00330)
+[data] loading station 290/1915 (ncep_00340)
+[data] loading station 300/1915 (ncep_00350)
+[data] loading station 310/1915 (ncep_00362)
+[data] loading station 320/1915 (ncep_00375)
+[data] loading station 330/1915 (ncep_00386)
+[data] loading station 340/1915 (ncep_00396)
+[data] loading station 350/1915 (ncep_00406)
+[data] loading station 360/1915 (ncep_00419)
+[data] loading station 370/1915 (ncep_00430)
+[data] loading station 380/1915 (ncep_00441)
+[data] loading station 390/1915 (ncep_00454)
+[data] loading station 400/1915 (ncep_00464)
+[data] loading station 410/1915 (ncep_00474)
+[data] loading station 420/1915 (ncep_00488)
+[data] loading station 430/1915 (ncep_00498)
+[data] loading station 440/1915 (ncep_00508)
+[data] loading station 450/1915 (ncep_00518)
+[data] loading station 460/1915 (ncep_00530)
+[data] loading station 470/1915 (ncep_00540)
+[data] loading station 480/1915 (ncep_00550)
+[data] loading station 490/1915 (ncep_00561)
+[data] loading station 500/1915 (ncep_00571)
+[data] loading station 510/1915 (ncep_00581)
+[data] loading station 520/1915 (ncep_00594)
+[data] loading station 530/1915 (ncep_00604)
+[data] loading station 540/1915 (ncep_00614)
+[data] loading station 550/1915 (ncep_00625)
+[data] loading station 560/1915 (ncep_00639)
+[data] loading station 570/1915 (ncep_00650)
+[data] loading station 580/1915 (ncep_00661)
+[data] loading station 590/1915 (ncep_00671)
+[data] loading station 600/1915 (ncep_00681)
+[data] loading station 610/1915 (ncep_00691)
+[data] loading station 620/1915 (ncep_00701)
+[data] loading station 630/1915 (ncep_00711)
+[data] loading station 640/1915 (ncep_00722)
+[data] loading station 650/1915 (ncep_00732)
+[data] loading station 660/1915 (ncep_00743)
+[data] loading station 670/1915 (ncep_00753)
+[data] loading station 680/1915 (ncep_00763)
+[data] loading station 690/1915 (ncep_00775)
+[data] loading station 700/1915 (ncep_00786)
+[data] loading station 710/1915 (ncep_00797)
+[data] loading station 720/1915 (ncep_00809)
+[data] loading station 730/1915 (ncep_00819)
+[data] loading station 740/1915 (ncep_00829)
+[data] loading station 750/1915 (ncep_00839)
+[data] loading station 760/1915 (ncep_00849)
+[data] loading station 770/1915 (ncep_00860)
+[data] loading station 780/1915 (ncep_00870)
+[data] loading station 790/1915 (ncep_00882)
+[data] loading station 800/1915 (ncep_00892)
+[data] loading station 810/1915 (ncep_00902)
+[data] loading station 820/1915 (ncep_00912)
+[data] loading station 830/1915 (ncep_00922)
+[data] loading station 840/1915 (ncep_00932)
+[data] loading station 850/1915 (ncep_00942)
+[data] loading station 860/1915 (ncep_00955)
+[data] loading station 870/1915 (ncep_00967)
+[data] loading station 880/1915 (ncep_00978)
+[data] loading station 890/1915 (ncep_00989)
+[data] loading station 900/1915 (ncep_01000)
+[data] loading station 910/1915 (ncep_01010)
+[data] loading station 920/1915 (ncep_01021)
+[data] loading station 930/1915 (ncep_01032)
+[data] loading station 940/1915 (ncep_01047)
+[data] loading station 950/1915 (ncep_01059)
+[data] loading station 960/1915 (ncep_01069)
+[data] loading station 970/1915 (ncep_01079)
+[data] loading station 980/1915 (ncep_01089)
+[data] loading station 990/1915 (ncep_01099)
+[data] loading station 1000/1915 (ncep_01109)
+[data] loading station 1010/1915 (ncep_01120)
+[data] loading station 1020/1915 (ncep_01131)
+[data] loading station 1030/1915 (ncep_01143)
+[data] loading station 1040/1915 (ncep_01154)
+[data] loading station 1050/1915 (ncep_01164)
+[data] loading station 1060/1915 (ncep_01174)
+[data] loading station 1070/1915 (ncep_01184)
+[data] loading station 1080/1915 (ncep_01194)
+[data] loading station 1090/1915 (ncep_01204)
+[data] loading station 1100/1915 (ncep_01218)
+[data] loading station 1110/1915 (ncep_01230)
+[data] loading station 1120/1915 (ncep_01240)
+[data] loading station 1130/1915 (ncep_01253)
+[data] loading station 1140/1915 (ncep_01263)
+[data] loading station 1150/1915 (ncep_01273)
+[data] loading station 1160/1915 (ncep_01284)
+[data] loading station 1170/1915 (ncep_01295)
+[data] loading station 1180/1915 (ncep_01306)
+[data] loading station 1190/1915 (ncep_01316)
+[data] loading station 1200/1915 (ncep_01326)
+[data] loading station 1210/1915 (ncep_01338)
+[data] loading station 1220/1915 (ncep_01348)
+[data] loading station 1230/1915 (ncep_01358)
+[data] loading station 1240/1915 (ncep_01368)
+[data] loading station 1250/1915 (ncep_01378)
+[data] loading station 1260/1915 (ncep_01389)
+[data] loading station 1270/1915 (ncep_01401)
+[data] loading station 1280/1915 (ncep_01411)
+[data] loading station 1290/1915 (ncep_01421)
+[data] loading station 1300/1915 (ncep_01431)
+[data] loading station 1310/1915 (ncep_01441)
+[data] loading station 1320/1915 (ncep_01451)
+[data] loading station 1330/1915 (ncep_01461)
+[data] loading station 1340/1915 (ncep_01472)
+[data] loading station 1350/1915 (ncep_01482)
+[data] loading station 1360/1915 (ncep_01492)
+[data] loading station 1370/1915 (ncep_01503)
+[data] loading station 1380/1915 (ncep_01513)
+[data] loading station 1390/1915 (ncep_01524)
+[data] loading station 1400/1915 (ncep_01534)
+[data] loading station 1410/1915 (ncep_01544)
+[data] loading station 1420/1915 (ncep_01557)
+[data] loading station 1430/1915 (ncep_01567)
+[data] loading station 1440/1915 (ncep_01577)
+[data] loading station 1450/1915 (ncep_01587)
+[data] loading station 1460/1915 (ncep_01597)
+[data] loading station 1470/1915 (ncep_01608)
+[data] loading station 1480/1915 (ncep_01620)
+[data] loading station 1490/1915 (ncep_01631)
+[data] loading station 1500/1915 (ncep_01641)
+[data] loading station 1510/1915 (ncep_01652)
+[data] loading station 1520/1915 (ncep_01664)
+[data] loading station 1530/1915 (ncep_01675)
+[data] loading station 1540/1915 (ncep_01685)
+[data] loading station 1550/1915 (ncep_01695)
+[data] loading station 1560/1915 (ncep_01705)
+[data] loading station 1570/1915 (ncep_01716)
+[data] loading station 1580/1915 (ncep_01726)
+[data] loading station 1590/1915 (ncep_01736)
+[data] loading station 1600/1915 (ncep_01747)
+[data] loading station 1610/1915 (ncep_01758)
+[data] loading station 1620/1915 (ncep_01768)
+[data] loading station 1630/1915 (ncep_01779)
+[data] loading station 1640/1915 (ncep_01789)
+[data] loading station 1650/1915 (ncep_01801)
+[data] loading station 1660/1915 (ncep_01813)
+[data] loading station 1670/1915 (ncep_01826)
+[data] loading station 1680/1915 (ncep_01838)
+[data] loading station 1690/1915 (ncep_01848)
+[data] loading station 1700/1915 (ncep_01859)
+[data] loading station 1710/1915 (ncep_01871)
+[data] loading station 1720/1915 (ncep_01882)
+[data] loading station 1730/1915 (ncep_01892)
+[data] loading station 1740/1915 (ncep_01906)
+[data] loading station 1750/1915 (ncep_01918)
+[data] loading station 1760/1915 (ncep_01930)
+[data] loading station 1770/1915 (ncep_01942)
+[data] loading station 1780/1915 (ncep_01954)
+[data] loading station 1790/1915 (ncep_01967)
+[data] loading station 1800/1915 (ncep_01982)
+[data] loading station 1810/1915 (ncep_01993)
+[data] loading station 1820/1915 (ncep_02007)
+[data] loading station 1830/1915 (ncep_02020)
+[data] loading station 1840/1915 (ncep_02034)
+[data] loading station 1850/1915 (ncep_02045)
+[data] loading station 1860/1915 (ncep_02063)
+[data] loading station 1870/1915 (ncep_02074)
+[data] loading station 1880/1915 (ncep_02092)
+[data] loading station 1890/1915 (ncep_02109)
+[data] loading station 1900/1915 (ncep_02128)
+[data] loading station 1910/1915 (ncep_02147)
+[data] station_geo=(1915, 5, 5) mean=[0.046936411410570145, -0.07457990944385529, -2091.2265625, 2305.377197265625, 214.1522674560547] std=[17.303329467773438, 17.471771240234375, 1973.05712890625, 2185.5830078125, 237.0750274658203]
+[data] sample-index 100/1915
+[data] sample-index 200/1915
+[data] sample-index 300/1915
+[data] sample-index 400/1915
+[data] sample-index 500/1915
+[data] sample-index 600/1915
+[data] sample-index 700/1915
+[data] sample-index 800/1915
+[data] sample-index 900/1915
+[data] sample-index 1000/1915
+[data] sample-index 1100/1915
+[data] sample-index 1200/1915
+[data] sample-index 1300/1915
+[data] sample-index 1400/1915
+[data] sample-index 1500/1915
+[data] sample-index 1600/1915
+[data] sample-index 1700/1915
+[data] sample-index 1800/1915
+[data] sample-index 1900/1915
+[data] sample-index 1915/1915
+[train] stations=1915 samples=2915277
+[val] stations=1915 samples=980645
+[test] stations=1915 samples=1259729
+data index built in 1206.6s
+[train] batches/epoch=11388  [val] batches=3831
+  epoch 1 step 200/11388 loss 0.885728
+  epoch 1 step 400/11388 loss 0.818644
+  epoch 1 step 600/11388 loss 0.883909
+  epoch 1 step 800/11388 loss 0.852118
+  epoch 1 step 1000/11388 loss 0.807583
+  epoch 1 step 1200/11388 loss 0.786863
+  epoch 1 step 1400/11388 loss 0.784863
+  epoch 1 step 1600/11388 loss 0.801467
+  epoch 1 step 1800/11388 loss 0.746178
+  epoch 1 step 2000/11388 loss 0.761424
+  epoch 1 step 2200/11388 loss 0.706676
+  epoch 1 step 2400/11388 loss 0.748713
+  epoch 1 step 2600/11388 loss 0.729057
+  epoch 1 step 2800/11388 loss 0.718483
+  epoch 1 step 3000/11388 loss 0.679495
+  epoch 1 step 3200/11388 loss 0.748789
+  epoch 1 step 3400/11388 loss 0.740833
+  epoch 1 step 3600/11388 loss 0.791245
+  epoch 1 step 3800/11388 loss 0.756391
+  epoch 1 step 4000/11388 loss 0.725959
+  epoch 1 step 4200/11388 loss 0.801757
+  epoch 1 step 4400/11388 loss 0.779070
+  epoch 1 step 4600/11388 loss 0.763481
+  epoch 1 step 4800/11388 loss 0.820705
+  epoch 1 step 5000/11388 loss 0.657763
+  epoch 1 step 5200/11388 loss 0.746961
+  epoch 1 step 5400/11388 loss 0.684449
+  epoch 1 step 5600/11388 loss 0.727055
+  epoch 1 step 5800/11388 loss 0.754549
+  epoch 1 step 6000/11388 loss 0.728881
+  epoch 1 step 6200/11388 loss 0.770786
+  epoch 1 step 6400/11388 loss 0.698860
+  epoch 1 step 6600/11388 loss 0.710065
+  epoch 1 step 6800/11388 loss 0.748188
+  epoch 1 step 7000/11388 loss 0.724882
+  epoch 1 step 7200/11388 loss 0.756064
+  epoch 1 step 7400/11388 loss 0.693431
+  epoch 1 step 7600/11388 loss 0.707672
+  epoch 1 step 7800/11388 loss 0.736015
+  epoch 1 step 8000/11388 loss 0.725263
+  epoch 1 step 8200/11388 loss 0.696262
+  epoch 1 step 8400/11388 loss 0.735058
+  epoch 1 step 8600/11388 loss 0.693919
+  epoch 1 step 8800/11388 loss 0.731274
+  epoch 1 step 9000/11388 loss 0.759886
+  epoch 1 step 9200/11388 loss 0.746197
+  epoch 1 step 9400/11388 loss 0.742805
+  epoch 1 step 9600/11388 loss 0.670730
+  epoch 1 step 9800/11388 loss 0.723150
+  epoch 1 step 10000/11388 loss 0.697746
+  epoch 1 step 10200/11388 loss 0.755330
+  epoch 1 step 10400/11388 loss 0.730407
+  epoch 1 step 10600/11388 loss 0.719864
+  epoch 1 step 10800/11388 loss 0.724219
+  epoch 1 step 11000/11388 loss 0.709221
+  epoch 1 step 11200/11388 loss 0.698417
+[epoch 1] train_loss=0.747909 val_loss=0.767500 (309.0s)
+  saved best checkpoint (val_loss=0.767500)
+  epoch 2 step 200/11388 loss 0.728725
+  epoch 2 step 400/11388 loss 0.714930
+  epoch 2 step 600/11388 loss 0.731466
+  epoch 2 step 800/11388 loss 0.687077
+  epoch 2 step 1000/11388 loss 0.689533
+  epoch 2 step 1200/11388 loss 0.693528
+  epoch 2 step 1400/11388 loss 0.680635
+  epoch 2 step 1600/11388 loss 0.706014
+  epoch 2 step 1800/11388 loss 0.626252
+  epoch 2 step 2000/11388 loss 0.664996
+  epoch 2 step 2200/11388 loss 0.634409
+  epoch 2 step 2400/11388 loss 0.678470
+  epoch 2 step 2600/11388 loss 0.692651
+  epoch 2 step 2800/11388 loss 0.751203
+  epoch 2 step 3000/11388 loss 0.746199
+  epoch 2 step 3200/11388 loss 0.696096
+  epoch 2 step 3400/11388 loss 0.672112
+  epoch 2 step 3600/11388 loss 0.725458
+  epoch 2 step 3800/11388 loss 0.735706
+  epoch 2 step 4000/11388 loss 0.737696
+  epoch 2 step 4200/11388 loss 0.702280
+  epoch 2 step 4400/11388 loss 0.680033
+  epoch 2 step 4600/11388 loss 0.706052
+  epoch 2 step 4800/11388 loss 0.672683
+  epoch 2 step 5000/11388 loss 0.627070
+  epoch 2 step 5200/11388 loss 0.704625
+  epoch 2 step 5400/11388 loss 0.660449
+  epoch 2 step 5600/11388 loss 0.642920
+  epoch 2 step 5800/11388 loss 0.671222
+  epoch 2 step 6000/11388 loss 0.656939
+  epoch 2 step 6200/11388 loss 0.716921
+  epoch 2 step 6400/11388 loss 0.703172
+  epoch 2 step 6600/11388 loss 0.686054
+  epoch 2 step 6800/11388 loss 0.665287
+  epoch 2 step 7000/11388 loss 0.698928
+  epoch 2 step 7200/11388 loss 0.676002
+  epoch 2 step 7400/11388 loss 0.668974
+  epoch 2 step 7600/11388 loss 0.705891
+  epoch 2 step 7800/11388 loss 0.716403
+  epoch 2 step 8000/11388 loss 0.699564
+  epoch 2 step 8200/11388 loss 0.668148
+  epoch 2 step 8400/11388 loss 0.698772
+  epoch 2 step 8600/11388 loss 0.649462
+  epoch 2 step 8800/11388 loss 0.702384
+  epoch 2 step 9000/11388 loss 0.700426
+  epoch 2 step 9200/11388 loss 0.642196
+  epoch 2 step 9400/11388 loss 0.654608
+  epoch 2 step 9600/11388 loss 0.700339
+  epoch 2 step 9800/11388 loss 0.603033
+  epoch 2 step 10000/11388 loss 0.684048
+  epoch 2 step 10200/11388 loss 0.770803
+  epoch 2 step 10400/11388 loss 0.652894
+  epoch 2 step 10600/11388 loss 0.626142
+  epoch 2 step 10800/11388 loss 0.670897
+  epoch 2 step 11000/11388 loss 0.688637
+  epoch 2 step 11200/11388 loss 0.718347
+[epoch 2] train_loss=0.694881 val_loss=0.740124 (292.9s)
+  saved best checkpoint (val_loss=0.740124)
+  epoch 3 step 200/11388 loss 0.669978
+  epoch 3 step 400/11388 loss 0.676099
+  epoch 3 step 600/11388 loss 0.672119
+  epoch 3 step 800/11388 loss 0.688920
+  epoch 3 step 1000/11388 loss 0.653796
+  epoch 3 step 1200/11388 loss 0.722235
+  epoch 3 step 1400/11388 loss 0.655422
+  epoch 3 step 1600/11388 loss 0.697934
+  epoch 3 step 1800/11388 loss 0.660139
+  epoch 3 step 2000/11388 loss 0.676683
+  epoch 3 step 2200/11388 loss 0.657886
+  epoch 3 step 2400/11388 loss 0.667866
+  epoch 3 step 2600/11388 loss 0.655325
+  epoch 3 step 2800/11388 loss 0.702842
+  epoch 3 step 3000/11388 loss 0.698844
+  epoch 3 step 3200/11388 loss 0.635445
+  epoch 3 step 3400/11388 loss 0.668208
+  epoch 3 step 3600/11388 loss 0.620013
+  epoch 3 step 3800/11388 loss 0.657924
+  epoch 3 step 4000/11388 loss 0.662151
+  epoch 3 step 4200/11388 loss 0.683065
+  epoch 3 step 4400/11388 loss 0.712791
+  epoch 3 step 4600/11388 loss 0.696304
+  epoch 3 step 4800/11388 loss 0.739630
+  epoch 3 step 5000/11388 loss 0.642067
+  epoch 3 step 5200/11388 loss 0.646271
+  epoch 3 step 5400/11388 loss 0.709962
+  epoch 3 step 5600/11388 loss 0.703660
+  epoch 3 step 5800/11388 loss 0.642008
+  epoch 3 step 6000/11388 loss 0.675328
+  epoch 3 step 6200/11388 loss 0.613463
+  epoch 3 step 6400/11388 loss 0.616041
+  epoch 3 step 6600/11388 loss 0.709010
+  epoch 3 step 6800/11388 loss 0.639806
+  epoch 3 step 7000/11388 loss 0.601374
+  epoch 3 step 7200/11388 loss 0.650419
+  epoch 3 step 7400/11388 loss 0.723707
+  epoch 3 step 7600/11388 loss 0.677401
+  epoch 3 step 7800/11388 loss 0.652396
+  epoch 3 step 8000/11388 loss 0.664689
+  epoch 3 step 8200/11388 loss 0.708970
+  epoch 3 step 8400/11388 loss 0.707022
+  epoch 3 step 8600/11388 loss 0.674559
+  epoch 3 step 8800/11388 loss 0.704099
+  epoch 3 step 9000/11388 loss 0.646142
+  epoch 3 step 9200/11388 loss 0.667660
+  epoch 3 step 9400/11388 loss 0.649842
+  epoch 3 step 9600/11388 loss 0.628722
+  epoch 3 step 9800/11388 loss 0.705728
+  epoch 3 step 10000/11388 loss 0.680003
+  epoch 3 step 10200/11388 loss 0.694821
+  epoch 3 step 10400/11388 loss 0.633460
+  epoch 3 step 10600/11388 loss 0.658603
+  epoch 3 step 10800/11388 loss 0.667125
+  epoch 3 step 11000/11388 loss 0.674257
+  epoch 3 step 11200/11388 loss 0.689029
+[epoch 3] train_loss=0.677794 val_loss=0.729231 (279.0s)
+  saved best checkpoint (val_loss=0.729231)
+  epoch 4 step 200/11388 loss 0.650884
+  epoch 4 step 400/11388 loss 0.678149
+  epoch 4 step 600/11388 loss 0.680306
+  epoch 4 step 800/11388 loss 0.688920
+  epoch 4 step 1000/11388 loss 0.671489
+  epoch 4 step 1200/11388 loss 0.612295
+  epoch 4 step 1400/11388 loss 0.730887
+  epoch 4 step 1600/11388 loss 0.718870
+  epoch 4 step 1800/11388 loss 0.724869
+  epoch 4 step 2000/11388 loss 0.699661
+  epoch 4 step 2200/11388 loss 0.722150
+  epoch 4 step 2400/11388 loss 0.649790
+  epoch 4 step 2600/11388 loss 0.659918
+  epoch 4 step 2800/11388 loss 0.637365
+  epoch 4 step 3000/11388 loss 0.779323
+  epoch 4 step 3200/11388 loss 0.676876
+  epoch 4 step 3400/11388 loss 0.630039
+  epoch 4 step 3600/11388 loss 0.683671
+  epoch 4 step 3800/11388 loss 0.664605
+  epoch 4 step 4000/11388 loss 0.664769
+  epoch 4 step 4200/11388 loss 0.669178
+  epoch 4 step 4400/11388 loss 0.679690
+  epoch 4 step 4600/11388 loss 0.691250
+  epoch 4 step 4800/11388 loss 0.712887
+  epoch 4 step 5000/11388 loss 0.670589
+  epoch 4 step 5200/11388 loss 0.658669
+  epoch 4 step 5400/11388 loss 0.632607
+  epoch 4 step 5600/11388 loss 0.698033
+  epoch 4 step 5800/11388 loss 0.609701
+  epoch 4 step 6000/11388 loss 0.664352
+  epoch 4 step 6200/11388 loss 0.655659
+  epoch 4 step 6400/11388 loss 0.666900
+  epoch 4 step 6600/11388 loss 0.694172
+  epoch 4 step 6800/11388 loss 0.701870
+  epoch 4 step 7000/11388 loss 0.657120
+  epoch 4 step 7200/11388 loss 0.646405
+  epoch 4 step 7400/11388 loss 0.626146
+  epoch 4 step 7600/11388 loss 0.639879
+  epoch 4 step 7800/11388 loss 0.657426
+  epoch 4 step 8000/11388 loss 0.698824
+  epoch 4 step 8200/11388 loss 0.630883
+  epoch 4 step 8400/11388 loss 0.722493
+  epoch 4 step 8600/11388 loss 0.665485
+  epoch 4 step 8800/11388 loss 0.685225
+  epoch 4 step 9000/11388 loss 0.684840
+  epoch 4 step 9200/11388 loss 0.710981
+  epoch 4 step 9400/11388 loss 0.726890
+  epoch 4 step 9600/11388 loss 0.630017
+  epoch 4 step 9800/11388 loss 0.698185
+  epoch 4 step 10000/11388 loss 0.657758
+  epoch 4 step 10200/11388 loss 0.658792
+  epoch 4 step 10400/11388 loss 0.676812
+  epoch 4 step 10600/11388 loss 0.688592
+  epoch 4 step 10800/11388 loss 0.718444
+  epoch 4 step 11000/11388 loss 0.697769
+  epoch 4 step 11200/11388 loss 0.628912
+[epoch 4] train_loss=0.669103 val_loss=0.725661 (277.1s)
+  saved best checkpoint (val_loss=0.725661)
+  epoch 5 step 200/11388 loss 0.727759
+  epoch 5 step 400/11388 loss 0.680700
+  epoch 5 step 600/11388 loss 0.625759
+  epoch 5 step 800/11388 loss 0.649270
+  epoch 5 step 1000/11388 loss 0.710676
+  epoch 5 step 1200/11388 loss 0.674509
+  epoch 5 step 1400/11388 loss 0.653403
+  epoch 5 step 1600/11388 loss 0.650498
+  epoch 5 step 1800/11388 loss 0.622629
+  epoch 5 step 2000/11388 loss 0.603663
+  epoch 5 step 2200/11388 loss 0.624242
+  epoch 5 step 2400/11388 loss 0.645426
+  epoch 5 step 2600/11388 loss 0.652357
+  epoch 5 step 2800/11388 loss 0.701011
+  epoch 5 step 3000/11388 loss 0.742623
+  epoch 5 step 3200/11388 loss 0.642581
+  epoch 5 step 3400/11388 loss 0.632421
+  epoch 5 step 3600/11388 loss 0.710791
+  epoch 5 step 3800/11388 loss 0.636001
+  epoch 5 step 4000/11388 loss 0.672557
+  epoch 5 step 4200/11388 loss 0.704340
+  epoch 5 step 4400/11388 loss 0.638875
+  epoch 5 step 4600/11388 loss 0.650179
+  epoch 5 step 4800/11388 loss 0.635127
+  epoch 5 step 5000/11388 loss 0.634031
+  epoch 5 step 5200/11388 loss 0.654180
+  epoch 5 step 5400/11388 loss 0.627675
+  epoch 5 step 5600/11388 loss 0.630039
+  epoch 5 step 5800/11388 loss 0.689963
+  epoch 5 step 6000/11388 loss 0.704613
+  epoch 5 step 6200/11388 loss 0.664883
+  epoch 5 step 6400/11388 loss 0.622849
+  epoch 5 step 6600/11388 loss 0.712859
+  epoch 5 step 6800/11388 loss 0.705493
+  epoch 5 step 7000/11388 loss 0.672949
+  epoch 5 step 7200/11388 loss 0.704054
+  epoch 5 step 7400/11388 loss 0.647861
+  epoch 5 step 7600/11388 loss 0.603081
+  epoch 5 step 7800/11388 loss 0.701812
+  epoch 5 step 8000/11388 loss 0.753303
+  epoch 5 step 8200/11388 loss 0.726137
+  epoch 5 step 8400/11388 loss 0.614890
+  epoch 5 step 8600/11388 loss 0.682226
+  epoch 5 step 8800/11388 loss 0.664380
+  epoch 5 step 9000/11388 loss 0.677914
+  epoch 5 step 9200/11388 loss 0.707652
+  epoch 5 step 9400/11388 loss 0.692688
+  epoch 5 step 9600/11388 loss 0.619321
+  epoch 5 step 9800/11388 loss 0.662741
+  epoch 5 step 10000/11388 loss 0.682417
+  epoch 5 step 10200/11388 loss 0.666026
+  epoch 5 step 10400/11388 loss 0.603025
+  epoch 5 step 10600/11388 loss 0.603045
+  epoch 5 step 10800/11388 loss 0.635247
+  epoch 5 step 11000/11388 loss 0.615607
+  epoch 5 step 11200/11388 loss 0.625783
+[epoch 5] train_loss=0.662484 val_loss=0.714566 (274.6s)
+  saved best checkpoint (val_loss=0.714566)
+  epoch 6 step 200/11388 loss 0.680787
+  epoch 6 step 400/11388 loss 0.667957
+  epoch 6 step 600/11388 loss 0.676681
+  epoch 6 step 800/11388 loss 0.632140
+  epoch 6 step 1000/11388 loss 0.683735
+  epoch 6 step 1200/11388 loss 0.602614
+  epoch 6 step 1400/11388 loss 0.637414
+  epoch 6 step 1600/11388 loss 0.686167
+  epoch 6 step 1800/11388 loss 0.650779
+  epoch 6 step 2000/11388 loss 0.694696
+  epoch 6 step 2200/11388 loss 0.639613
+  epoch 6 step 2400/11388 loss 0.665778
+  epoch 6 step 2600/11388 loss 0.613048
+  epoch 6 step 2800/11388 loss 0.685557
+  epoch 6 step 3000/11388 loss 0.711168
+  epoch 6 step 3200/11388 loss 0.626429
+  epoch 6 step 3400/11388 loss 0.620055
+  epoch 6 step 3600/11388 loss 0.626521
+  epoch 6 step 3800/11388 loss 0.680112
+  epoch 6 step 4000/11388 loss 0.650916
+  epoch 6 step 4200/11388 loss 0.631993
+  epoch 6 step 4400/11388 loss 0.627284
+  epoch 6 step 4600/11388 loss 0.670901
+  epoch 6 step 4800/11388 loss 0.666937
+  epoch 6 step 5000/11388 loss 0.632946
+  epoch 6 step 5200/11388 loss 0.634158
+  epoch 6 step 5400/11388 loss 0.661577
+  epoch 6 step 5600/11388 loss 0.694335
+  epoch 6 step 5800/11388 loss 0.703166
+  epoch 6 step 6000/11388 loss 0.674862
+  epoch 6 step 6200/11388 loss 0.631152
+  epoch 6 step 6400/11388 loss 0.657153
+  epoch 6 step 6600/11388 loss 0.592861
+  epoch 6 step 6800/11388 loss 0.659905
+  epoch 6 step 7000/11388 loss 0.697559
+  epoch 6 step 7200/11388 loss 0.686870
+  epoch 6 step 7400/11388 loss 0.695873
+  epoch 6 step 7600/11388 loss 0.711130
+  epoch 6 step 7800/11388 loss 0.664444
+  epoch 6 step 8000/11388 loss 0.645720
+  epoch 6 step 8200/11388 loss 0.648110
+  epoch 6 step 8400/11388 loss 0.632150
+  epoch 6 step 8600/11388 loss 0.678337
+  epoch 6 step 8800/11388 loss 0.661825
+  epoch 6 step 9000/11388 loss 0.643623
+  epoch 6 step 9200/11388 loss 0.620984
+  epoch 6 step 9400/11388 loss 0.684563
+  epoch 6 step 9600/11388 loss 0.671734
+  epoch 6 step 9800/11388 loss 0.586008
+  epoch 6 step 10000/11388 loss 0.648010
+  epoch 6 step 10200/11388 loss 0.738564
+  epoch 6 step 10400/11388 loss 0.682323
+  epoch 6 step 10600/11388 loss 0.649537
+  epoch 6 step 10800/11388 loss 0.684956
+  epoch 6 step 11000/11388 loss 0.684392
+  epoch 6 step 11200/11388 loss 0.664654
+[epoch 6] train_loss=0.656993 val_loss=0.716394 (276.3s)
+  epoch 7 step 200/11388 loss 0.591002
+  epoch 7 step 400/11388 loss 0.654340
+  epoch 7 step 600/11388 loss 0.658579
+  epoch 7 step 800/11388 loss 0.611072
+  epoch 7 step 1000/11388 loss 0.698462
+  epoch 7 step 1200/11388 loss 0.642619
+  epoch 7 step 1400/11388 loss 0.627838
+  epoch 7 step 1600/11388 loss 0.649873
+  epoch 7 step 1800/11388 loss 0.664681
+  epoch 7 step 2000/11388 loss 0.606957
+  epoch 7 step 2200/11388 loss 0.650655
+  epoch 7 step 2400/11388 loss 0.691848
+  epoch 7 step 2600/11388 loss 0.688456
+  epoch 7 step 2800/11388 loss 0.689096
+  epoch 7 step 3000/11388 loss 0.636635
+  epoch 7 step 3200/11388 loss 0.611702
+  epoch 7 step 3400/11388 loss 0.675597
+  epoch 7 step 3600/11388 loss 0.646028
+  epoch 7 step 3800/11388 loss 0.671077
+  epoch 7 step 4000/11388 loss 0.618591
+  epoch 7 step 4200/11388 loss 0.627889
+  epoch 7 step 4400/11388 loss 0.640260
+  epoch 7 step 4600/11388 loss 0.686192
+  epoch 7 step 4800/11388 loss 0.660722
+  epoch 7 step 5000/11388 loss 0.613718
+  epoch 7 step 5200/11388 loss 0.669182
+  epoch 7 step 5400/11388 loss 0.696297
+  epoch 7 step 5600/11388 loss 0.618504
+  epoch 7 step 5800/11388 loss 0.650173
+  epoch 7 step 6000/11388 loss 0.571056
+  epoch 7 step 6200/11388 loss 0.628448
+  epoch 7 step 6400/11388 loss 0.658852
+  epoch 7 step 6600/11388 loss 0.679095
+  epoch 7 step 6800/11388 loss 0.710704
+  epoch 7 step 7000/11388 loss 0.661147
+  epoch 7 step 7200/11388 loss 0.606635
+  epoch 7 step 7400/11388 loss 0.678848
+  epoch 7 step 7600/11388 loss 0.665652
+  epoch 7 step 7800/11388 loss 0.692001
+  epoch 7 step 8000/11388 loss 0.623942
+  epoch 7 step 8200/11388 loss 0.673633
+  epoch 7 step 8400/11388 loss 0.610737
+  epoch 7 step 8600/11388 loss 0.643904
+  epoch 7 step 8800/11388 loss 0.701093
+  epoch 7 step 9000/11388 loss 0.695852
+  epoch 7 step 9200/11388 loss 0.663737
+  epoch 7 step 9400/11388 loss 0.610734
+  epoch 7 step 9600/11388 loss 0.603681
+  epoch 7 step 9800/11388 loss 0.644124
+  epoch 7 step 10000/11388 loss 0.660036
+  epoch 7 step 10200/11388 loss 0.621747
+  epoch 7 step 10400/11388 loss 0.648883
+  epoch 7 step 10600/11388 loss 0.653396
+  epoch 7 step 10800/11388 loss 0.665209
+  epoch 7 step 11000/11388 loss 0.653703
+  epoch 7 step 11200/11388 loss 0.660817
+[epoch 7] train_loss=0.652143 val_loss=0.713988 (275.5s)
+  saved best checkpoint (val_loss=0.713988)
+  epoch 8 step 200/11388 loss 0.633544
+  epoch 8 step 400/11388 loss 0.659384
+  epoch 8 step 600/11388 loss 0.720244
+  epoch 8 step 800/11388 loss 0.607752
+  epoch 8 step 1000/11388 loss 0.639341
+  epoch 8 step 1200/11388 loss 0.638584
+  epoch 8 step 1400/11388 loss 0.606000
+  epoch 8 step 1600/11388 loss 0.600064
+  epoch 8 step 1800/11388 loss 0.678816
+  epoch 8 step 2000/11388 loss 0.677200
+  epoch 8 step 2200/11388 loss 0.660107
+  epoch 8 step 2400/11388 loss 0.673447
+  epoch 8 step 2600/11388 loss 0.644941
+  epoch 8 step 2800/11388 loss 0.635908
+  epoch 8 step 3000/11388 loss 0.668304
+  epoch 8 step 3200/11388 loss 0.682455
+  epoch 8 step 3400/11388 loss 0.665901
+  epoch 8 step 3600/11388 loss 0.621736
+  epoch 8 step 3800/11388 loss 0.623085
+  epoch 8 step 4000/11388 loss 0.671442
+  epoch 8 step 4200/11388 loss 0.597446
+  epoch 8 step 4400/11388 loss 0.649139
+  epoch 8 step 4600/11388 loss 0.661095
+  epoch 8 step 4800/11388 loss 0.619491
+  epoch 8 step 5000/11388 loss 0.664602
+  epoch 8 step 5200/11388 loss 0.666016
+  epoch 8 step 5400/11388 loss 0.644205
+  epoch 8 step 5600/11388 loss 0.607896
+  epoch 8 step 5800/11388 loss 0.638842
+  epoch 8 step 6000/11388 loss 0.637602
+  epoch 8 step 6200/11388 loss 0.629665
+  epoch 8 step 6400/11388 loss 0.598537
+  epoch 8 step 6600/11388 loss 0.663243
+  epoch 8 step 6800/11388 loss 0.635096
+  epoch 8 step 7000/11388 loss 0.662301
+  epoch 8 step 7200/11388 loss 0.590001
+  epoch 8 step 7400/11388 loss 0.660469
+  epoch 8 step 7600/11388 loss 0.636794
+  epoch 8 step 7800/11388 loss 0.641036
+  epoch 8 step 8000/11388 loss 0.629270
+  epoch 8 step 8200/11388 loss 0.662858
+  epoch 8 step 8400/11388 loss 0.602302
+  epoch 8 step 8600/11388 loss 0.676010
+  epoch 8 step 8800/11388 loss 0.670413
+  epoch 8 step 9000/11388 loss 0.600326
+  epoch 8 step 9200/11388 loss 0.680072
+  epoch 8 step 9400/11388 loss 0.625590
+  epoch 8 step 9600/11388 loss 0.610829
+  epoch 8 step 9800/11388 loss 0.710890
+  epoch 8 step 10000/11388 loss 0.676682
+  epoch 8 step 10200/11388 loss 0.628176
+  epoch 8 step 10400/11388 loss 0.694811
+  epoch 8 step 10600/11388 loss 0.663333
+  epoch 8 step 10800/11388 loss 0.684154
+  epoch 8 step 11000/11388 loss 0.613489
+  epoch 8 step 11200/11388 loss 0.707836
+[epoch 8] train_loss=0.648656 val_loss=0.714643 (277.3s)
+  epoch 9 step 200/11388 loss 0.600278
+  epoch 9 step 400/11388 loss 0.646221
+  epoch 9 step 600/11388 loss 0.633805
+  epoch 9 step 800/11388 loss 0.709553
+  epoch 9 step 1000/11388 loss 0.614981
+  epoch 9 step 1200/11388 loss 0.685893
+  epoch 9 step 1400/11388 loss 0.690138
+  epoch 9 step 1600/11388 loss 0.573985
+  epoch 9 step 1800/11388 loss 0.628058
+  epoch 9 step 2000/11388 loss 0.660222
+  epoch 9 step 2200/11388 loss 0.639536
+  epoch 9 step 2400/11388 loss 0.638057
+  epoch 9 step 2600/11388 loss 0.682727
+  epoch 9 step 2800/11388 loss 0.575499
+  epoch 9 step 3000/11388 loss 0.676093
+  epoch 9 step 3200/11388 loss 0.619199
+  epoch 9 step 3400/11388 loss 0.633035
+  epoch 9 step 3600/11388 loss 0.618206
+  epoch 9 step 3800/11388 loss 0.665004
+  epoch 9 step 4000/11388 loss 0.575260
+  epoch 9 step 4200/11388 loss 0.698906
+  epoch 9 step 4400/11388 loss 0.616314
+  epoch 9 step 4600/11388 loss 0.721546
+  epoch 9 step 4800/11388 loss 0.677480
+  epoch 9 step 5000/11388 loss 0.624835
+  epoch 9 step 5200/11388 loss 0.641764
+  epoch 9 step 5400/11388 loss 0.670835
+  epoch 9 step 5600/11388 loss 0.637698
+  epoch 9 step 5800/11388 loss 0.659445
+  epoch 9 step 6000/11388 loss 0.685812
+  epoch 9 step 6200/11388 loss 0.655046
+  epoch 9 step 6400/11388 loss 0.648721
+  epoch 9 step 6600/11388 loss 0.630464
+  epoch 9 step 6800/11388 loss 0.643760
+  epoch 9 step 7000/11388 loss 0.686898
+  epoch 9 step 7200/11388 loss 0.636652
+  epoch 9 step 7400/11388 loss 0.673628
+  epoch 9 step 7600/11388 loss 0.676060
+  epoch 9 step 7800/11388 loss 0.682966
+  epoch 9 step 8000/11388 loss 0.658912
+  epoch 9 step 8200/11388 loss 0.676281
+  epoch 9 step 8400/11388 loss 0.645459
+  epoch 9 step 8600/11388 loss 0.688379
+  epoch 9 step 8800/11388 loss 0.725745
+  epoch 9 step 9000/11388 loss 0.668697
+  epoch 9 step 9200/11388 loss 0.589688
+  epoch 9 step 9400/11388 loss 0.628641
+  epoch 9 step 9600/11388 loss 0.653421
+  epoch 9 step 9800/11388 loss 0.579943
+  epoch 9 step 10000/11388 loss 0.640098
+  epoch 9 step 10200/11388 loss 0.616227
+  epoch 9 step 10400/11388 loss 0.739925
+  epoch 9 step 10600/11388 loss 0.558587
+  epoch 9 step 10800/11388 loss 0.696868
+  epoch 9 step 11000/11388 loss 0.623530
+  epoch 9 step 11200/11388 loss 0.611747
+[epoch 9] train_loss=0.645374 val_loss=0.709408 (275.8s)
+  saved best checkpoint (val_loss=0.709408)
+  epoch 10 step 200/11388 loss 0.614275
+  epoch 10 step 400/11388 loss 0.644620
+  epoch 10 step 600/11388 loss 0.600160
+  epoch 10 step 800/11388 loss 0.617607
+  epoch 10 step 1000/11388 loss 0.599701
+  epoch 10 step 1200/11388 loss 0.651237
+  epoch 10 step 1400/11388 loss 0.652738
+  epoch 10 step 1600/11388 loss 0.630799
+  epoch 10 step 1800/11388 loss 0.576393
+  epoch 10 step 2000/11388 loss 0.671334
+  epoch 10 step 2200/11388 loss 0.630835
+  epoch 10 step 2400/11388 loss 0.648607
+  epoch 10 step 2600/11388 loss 0.667876
+  epoch 10 step 2800/11388 loss 0.650059
+  epoch 10 step 3000/11388 loss 0.693327
+  epoch 10 step 3200/11388 loss 0.612614
+  epoch 10 step 3400/11388 loss 0.612087
+  epoch 10 step 3600/11388 loss 0.643597
+  epoch 10 step 3800/11388 loss 0.737656
+  epoch 10 step 4000/11388 loss 0.598269
+  epoch 10 step 4200/11388 loss 0.609845
+  epoch 10 step 4400/11388 loss 0.644893
+  epoch 10 step 4600/11388 loss 0.613875
+  epoch 10 step 4800/11388 loss 0.668241
+  epoch 10 step 5000/11388 loss 0.635543
+  epoch 10 step 5200/11388 loss 0.652878
+  epoch 10 step 5400/11388 loss 0.670334
+  epoch 10 step 5600/11388 loss 0.697963
+  epoch 10 step 5800/11388 loss 0.672803
+  epoch 10 step 6000/11388 loss 0.694842
+  epoch 10 step 6200/11388 loss 0.661817
+  epoch 10 step 6400/11388 loss 0.639053
+  epoch 10 step 6600/11388 loss 0.673895
+  epoch 10 step 6800/11388 loss 0.678872
+  epoch 10 step 7000/11388 loss 0.594392
+  epoch 10 step 7200/11388 loss 0.612339
+  epoch 10 step 7400/11388 loss 0.657702
+  epoch 10 step 7600/11388 loss 0.594041
+  epoch 10 step 7800/11388 loss 0.636568
+  epoch 10 step 8000/11388 loss 0.631496
+  epoch 10 step 8200/11388 loss 0.617339
+  epoch 10 step 8400/11388 loss 0.636488
+  epoch 10 step 8600/11388 loss 0.732701
+  epoch 10 step 8800/11388 loss 0.578771
+  epoch 10 step 9000/11388 loss 0.650510
+  epoch 10 step 9200/11388 loss 0.586096
+  epoch 10 step 9400/11388 loss 0.656991
+  epoch 10 step 9600/11388 loss 0.664899
+  epoch 10 step 9800/11388 loss 0.598527
+  epoch 10 step 10000/11388 loss 0.697844
+  epoch 10 step 10200/11388 loss 0.672012
+  epoch 10 step 10400/11388 loss 0.618978
+  epoch 10 step 10600/11388 loss 0.622277
+  epoch 10 step 10800/11388 loss 0.728207
+  epoch 10 step 11000/11388 loss 0.643222
+  epoch 10 step 11200/11388 loss 0.730151
+[epoch 10] train_loss=0.642263 val_loss=0.725523 (277.2s)
+  epoch 11 step 200/11388 loss 0.612453
+  epoch 11 step 400/11388 loss 0.633058
+  epoch 11 step 600/11388 loss 0.605872
+  epoch 11 step 800/11388 loss 0.617213
+  epoch 11 step 1000/11388 loss 0.624705
+  epoch 11 step 1200/11388 loss 0.593039
+  epoch 11 step 1400/11388 loss 0.607727
+  epoch 11 step 1600/11388 loss 0.630348
+  epoch 11 step 1800/11388 loss 0.635546
+  epoch 11 step 2000/11388 loss 0.687565
+  epoch 11 step 2200/11388 loss 0.650651
+  epoch 11 step 2400/11388 loss 0.661093
+  epoch 11 step 2600/11388 loss 0.588621
+  epoch 11 step 2800/11388 loss 0.614565
+  epoch 11 step 3000/11388 loss 0.556762
+  epoch 11 step 3200/11388 loss 0.619387
+  epoch 11 step 3400/11388 loss 0.623164
+  epoch 11 step 3600/11388 loss 0.615991
+  epoch 11 step 3800/11388 loss 0.655610
+  epoch 11 step 4000/11388 loss 0.621388
+  epoch 11 step 4200/11388 loss 0.728590
+  epoch 11 step 4400/11388 loss 0.608863
+  epoch 11 step 4600/11388 loss 0.628186
+  epoch 11 step 4800/11388 loss 0.619816
+  epoch 11 step 5000/11388 loss 0.685877
+  epoch 11 step 5200/11388 loss 0.626332
+  epoch 11 step 5400/11388 loss 0.624199
+  epoch 11 step 5600/11388 loss 0.641930
+  epoch 11 step 5800/11388 loss 0.628462
+  epoch 11 step 6000/11388 loss 0.636461
+  epoch 11 step 6200/11388 loss 0.672919
+  epoch 11 step 6400/11388 loss 0.641953
+  epoch 11 step 6600/11388 loss 0.625267
+  epoch 11 step 6800/11388 loss 0.630460
+  epoch 11 step 7000/11388 loss 0.684344
+  epoch 11 step 7200/11388 loss 0.596309
+  epoch 11 step 7400/11388 loss 0.667212
+  epoch 11 step 7600/11388 loss 0.687591
+  epoch 11 step 7800/11388 loss 0.634179
+  epoch 11 step 8000/11388 loss 0.593723
+  epoch 11 step 8200/11388 loss 0.603666
+  epoch 11 step 8400/11388 loss 0.729996
+  epoch 11 step 8600/11388 loss 0.641546
+  epoch 11 step 8800/11388 loss 0.657015
+  epoch 11 step 9000/11388 loss 0.596224
+  epoch 11 step 9200/11388 loss 0.645614
+  epoch 11 step 9400/11388 loss 0.648215
+  epoch 11 step 9600/11388 loss 0.650828
+  epoch 11 step 9800/11388 loss 0.664969
+  epoch 11 step 10000/11388 loss 0.649889
+  epoch 11 step 10200/11388 loss 0.593061
+  epoch 11 step 10400/11388 loss 0.679571
+  epoch 11 step 10600/11388 loss 0.616337
+  epoch 11 step 10800/11388 loss 0.640497
+  epoch 11 step 11000/11388 loss 0.637620
+  epoch 11 step 11200/11388 loss 0.677341
+[epoch 11] train_loss=0.639429 val_loss=0.712063 (286.3s)
+  epoch 12 step 200/11388 loss 0.655669
+  epoch 12 step 400/11388 loss 0.661278
+  epoch 12 step 600/11388 loss 0.664426
+  epoch 12 step 800/11388 loss 0.593435
+  epoch 12 step 1000/11388 loss 0.588371
+  epoch 12 step 1200/11388 loss 0.667961
+  epoch 12 step 1400/11388 loss 0.623566
+  epoch 12 step 1600/11388 loss 0.633838
+  epoch 12 step 1800/11388 loss 0.614613
+  epoch 12 step 2000/11388 loss 0.639368
+  epoch 12 step 2200/11388 loss 0.611710
+  epoch 12 step 2400/11388 loss 0.617341
+  epoch 12 step 2600/11388 loss 0.601660
+  epoch 12 step 2800/11388 loss 0.638424
+  epoch 12 step 3000/11388 loss 0.624813
+  epoch 12 step 3200/11388 loss 0.629760
+  epoch 12 step 3400/11388 loss 0.591387
+  epoch 12 step 3600/11388 loss 0.683483
+  epoch 12 step 3800/11388 loss 0.672533
+  epoch 12 step 4000/11388 loss 0.625881
+  epoch 12 step 4200/11388 loss 0.589322
+  epoch 12 step 4400/11388 loss 0.584794
+  epoch 12 step 4600/11388 loss 0.627030
+  epoch 12 step 4800/11388 loss 0.627077
+  epoch 12 step 5000/11388 loss 0.636208
+  epoch 12 step 5200/11388 loss 0.643047
+  epoch 12 step 5400/11388 loss 0.674214
+  epoch 12 step 5600/11388 loss 0.673761
+  epoch 12 step 5800/11388 loss 0.579488
+  epoch 12 step 6000/11388 loss 0.621494
+  epoch 12 step 6200/11388 loss 0.622725
+  epoch 12 step 6400/11388 loss 0.633940
+  epoch 12 step 6600/11388 loss 0.573903
+  epoch 12 step 6800/11388 loss 0.616895
+  epoch 12 step 7000/11388 loss 0.700996
+  epoch 12 step 7200/11388 loss 0.609514
+  epoch 12 step 7400/11388 loss 0.643704
+  epoch 12 step 7600/11388 loss 0.662911
+  epoch 12 step 7800/11388 loss 0.585297
+  epoch 12 step 8000/11388 loss 0.587303
+  epoch 12 step 8200/11388 loss 0.638386
+  epoch 12 step 8400/11388 loss 0.693166
+  epoch 12 step 8600/11388 loss 0.588422
+  epoch 12 step 8800/11388 loss 0.683199
+  epoch 12 step 9000/11388 loss 0.651647
+  epoch 12 step 9200/11388 loss 0.604586
+  epoch 12 step 9400/11388 loss 0.667712
+  epoch 12 step 9600/11388 loss 0.608013
+  epoch 12 step 9800/11388 loss 0.583910
+  epoch 12 step 10000/11388 loss 0.586715
+  epoch 12 step 10200/11388 loss 0.597792
+  epoch 12 step 10400/11388 loss 0.656628
+  epoch 12 step 10600/11388 loss 0.687045
+  epoch 12 step 10800/11388 loss 0.602656
+  epoch 12 step 11000/11388 loss 0.647664
+  epoch 12 step 11200/11388 loss 0.623867
+[epoch 12] train_loss=0.636609 val_loss=0.718317 (282.8s)
+  early stopping after 12 epochs
+loaded best checkpoint from epoch 9 (val_loss=0.709408)
+[test] samples=1259729 batches=4921
+{
+  "variables": [
+    "p",
+    "slp",
+    "t2m",
+    "r2m",
+    "u10",
+    "v10"
+  ],
+  "per_variable": [
+    {
+      "variable": "p",
+      "mae": 5.258579730987549,
+      "mse": 46.25122833251953,
+      "rmse": 6.800825562571028
+    },
+    {
+      "variable": "slp",
+      "mae": 4.832876682281494,
+      "mse": 40.999053955078125,
+      "rmse": 6.403050363309516
+    },
+    {
+      "variable": "t2m",
+      "mae": 5.250461101531982,
+      "mse": 46.91136932373047,
+      "rmse": 6.849187493690801
+    },
+    {
+      "variable": "r2m",
+      "mae": 13.056674003601074,
+      "mse": 267.4617004394531,
+      "rmse": 16.354256340153565
+    },
+    {
+      "variable": "u10",
+      "mae": 2.259495496749878,
+      "mse": 8.168155670166016,
+      "rmse": 2.8579985427158663
+    },
+    {
+      "variable": "v10",
+      "mae": 2.3500828742980957,
+      "mse": 8.727672576904297,
+      "rmse": 2.9542634575989153
+    }
+  ],
+  "overall": {
+    "mae": 5.50136137008667,
+    "mse": 69.7531967163086,
+    "rmse": 8.351838111877441
+  },
+  "n_samples": 1259729
+}
+outputs saved under /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/nowcasting/outputs/model_id=all_stations_v1_5min_20epoch_s1915_off0_h6_dm128_el2_nh4_df512_sp

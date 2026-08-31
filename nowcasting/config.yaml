@@ -20,7 +20,7 @@ splits:            # UTC, half-open [start, end); empty end = end of data
   test_end: ""
 
 sampling:
-  stations: 64                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
+  stations: 0                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
   station_offset: 0            # skip this many target stations first
   max_neighbors: 5             # GNSS neighbors per target (channels = 2*this + this)
   min_valid_neighbors: 3       # minimum neighbors valid over T-6..T to keep a sample
@@ -34,8 +34,11 @@ model:
   window_hours: 2              # input window T-window_hours .. T (5min -> 25 steps); seq_len derived
   pred_len: 1                  # nowcast horizon
   spatial_enc: true            # per-neighbor positional encoding (ENU + heights), added to neighbor tokens
-  n_geo: 5                     # [dE_km, dN_km, dU_m, target_h_m, ngl_h_m]
+  time_encoding: linear        # best of 4 tested (test RMSE 8.35); none | linear | hour_sincos | sincos
+  time_freq: h                 # used when time_encoding=linear: 'h' (best) or '5min'
+  n_geo: 4                     # [dE_km, dN_km, dU_m, ngl_h_m]; target height moved to output-head feature
   spatial_mlp_hidden: 128      # MLP hidden width for the spatial embedding
+  target_h_feat: true          # z-scored target station height concatenated before the final linear layer
   d_model: 128
   n_heads: 4
   e_layers: 2
@@ -44,11 +47,11 @@ model:
   activation: gelu
 
 training:
-  epochs: 10
+  epochs: 20
   batch_size: 256
   learning_rate: 0.001
   patience: 3                  # early stopping patience (val loss)
-  num_workers: 0
+  num_workers: 8
   seed: 2021
   target_scale: true           # z-score NCEP targets with train statistics
 

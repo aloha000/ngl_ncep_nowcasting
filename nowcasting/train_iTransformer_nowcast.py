@@ -47,11 +47,10 @@ sys.path.insert(0, str(TSL_ROOT))
 
 import zarr  # noqa: E402
 from models.iTransformer import Model  # noqa: E402
-from utils.timefeatures import time_features  # noqa: E402
+from utils.timefeatures import time_features, time_features_from_frequency_str  # noqa: E402
 
 NCEP_VARS = ["p", "slp", "t2m", "r2m", "u10", "v10"]
 NGL_VARS = ["ztd", "zwd"]
-TIME_FEATURES = 4         # freq='h' with embed='timeF'
 
 
 def parse_utc(value: str):
@@ -63,55 +62,26 @@ def parse_utc(value: str):
     return ts.tz_convert("UTC")
 
 
-DEFAULTS: dict = {
+# Run parameters come exclusively from the YAML config (nowcasting/config.yaml);
+# the script holds no value defaults. Missing/unknown keys are reported at startup.
+REQUIRED_KEYS = {
     # data
-    "ngl_zarr": "dataset/ngl_5min.zarr",
-    "ncep_zarr": "dataset/ncep_hourly.zarr",
-    "neighbors_parquet": "dataset/target_gnss_neighbors.parquet",
-    "target_stations_parquet": "dataset/target_stations.parquet",
-    "gnss_stations_parquet": "dataset/gnss_stations.parquet",
-    "ngl_step_minutes": 5,   # NGL time resolution (minutes); 1 = old hourly store
+    "ngl_zarr", "ncep_zarr", "neighbors_parquet", "target_stations_parquet",
+    "gnss_stations_parquet", "ngl_step_minutes",
     # temporal splits
-    "train_start": "2018-01-01T00:00",
-    "train_end": "2023-11-01T00:00",
-    "val_start": "2023-11-01T00:00",
-    "val_end": "2024-03-01T00:00",
-    "test_start": "2024-03-01T00:00",
-    "test_end": "",
+    "train_start", "train_end", "val_start", "val_end", "test_start", "test_end",
     # station/time sampling
-    "stations": 64,
-    "station_offset": 0,
-    "max_neighbors": 5,
-    "min_valid_neighbors": 3,
-    "hour_stride": 6,
-    "val_stride": 1,
-    "test_stride": 1,
-    "load_full_arrays": False,
-    "load_full_ncep": True,
+    "stations", "station_offset", "max_neighbors", "min_valid_neighbors",
+    "hour_stride", "val_stride", "test_stride", "load_full_arrays", "load_full_ncep",
     # model
-    "window_hours": 2,       # input window T-window_hours .. T (seq_len is derived)
-    "pred_len": 1,
-    "spatial_enc": True,     # per-neighbor positional encoding (ENU + absolute heights)
-    "n_geo": 5,              # [dE_km, dN_km, dU_m, target_h_m, ngl_h_m]
-    "spatial_mlp_hidden": 128,
-    "d_model": 128,
-    "n_heads": 4,
-    "e_layers": 2,
-    "d_ff": 512,
-    "dropout": 0.1,
-    "activation": "gelu",
+    "window_hours", "pred_len", "time_encoding", "time_freq", "spatial_enc", "n_geo", "spatial_mlp_hidden",
+    "target_h_feat",
+    "d_model", "n_heads", "e_layers", "d_ff", "dropout", "activation",
     # training
-    "epochs": 10,
-    "batch_size": 256,
-    "learning_rate": 1e-3,
-    "patience": 3,
-    "num_workers": 0,
-    "seed": 2021,
-    "target_scale": True,
+    "epochs", "batch_size", "learning_rate", "patience", "num_workers", "seed",
+    "target_scale",
     # run
-    "device": "auto",
-    "model_id": "gnss_nowcast",
-    "out_root": "nowcasting/outputs",
+    "device", "model_id", "out_root",
 }
 
 PATH_KEYS = ("ngl_zarr", "ncep_zarr", "neighbors_parquet",
@@ -152,7 +122,7 @@ def load_config(config_path: Path, overrides: list[str]) -> argparse.Namespace:
         raw = yaml.safe_load(f) or {}
     flat = _flatten(raw)
 
-    unknown = sorted(set(flat) - set(DEFAULTS))
+    unknown = sorted(set(flat) - REQUIRED_KEYS)
     if unknown:
         raise SystemExit(f"unknown config key(s): {', '.join(unknown)}")
 
@@ -160,13 +130,17 @@ def load_config(config_path: Path, overrides: list[str]) -> argparse.Namespace:
         if "=" not in spec:
             raise SystemExit(f"--set expects KEY=VALUE, got: {spec!r}")
         key, value = spec.split("=", 1)
-        if key not in DEFAULTS:
+        if key not in REQUIRED_KEYS:
             raise SystemExit(f"unknown config key in --set: {key!r}")
         flat[key] = coerce_value(value)
 
-    cfg = dict(DEFAULTS)
-    cfg.update(flat)
-    args = argparse.Namespace(**cfg)
+    missing = sorted(REQUIRED_KEYS - set(flat))
+    if missing:
+        raise SystemExit(
+            "missing config key(s); add them to the YAML config: " + ", ".join(missing)
+        )
+
+    args = argparse.Namespace(**flat)
     for key in PATH_KEYS:
         path = Path(getattr(args, key))
         setattr(args, key, path if path.is_absolute() else ROOT / path)
@@ -264,8 +238,27 @@ class NowcastData:
             self.ngl_time = self.ngl_time.tz_localize("UTC")
         if self.ncep_time.tz is None:
             self.ncep_time = self.ncep_time.tz_localize("UTC")
-        # Precompute timeF features once for the whole NGL time axis.
-        self.time_mark = time_features(self.ngl_time, freq="h").T.astype(np.float32)  # (T_ngl, 4)
+        # Precompute time marks once for the whole NGL time axis (optional).
+        if args.time_encoding == "sincos":
+            # Four calendar cycles, each encoded as a (sin, cos) pair:
+            # hour-of-day (24h), day-of-week (7d), day-of-month (31d), day-of-year (365d).
+            hours = np.asarray(self.ngl_time.hour, dtype=np.float32)
+            dows = np.asarray(self.ngl_time.dayofweek, dtype=np.float32)
+            doms = np.asarray(self.ngl_time.day - 1, dtype=np.float32)
+            doys = np.asarray(self.ngl_time.dayofyear - 1, dtype=np.float32)
+            cols = []
+            for values, period in ((hours, 24.0), (dows, 7.0), (doms, 31.0), (doys, 365.0)):
+                ang = 2.0 * np.pi * values / period
+                cols.extend([np.sin(ang), np.cos(ang)])
+            self.time_mark = np.stack(cols, axis=1).astype(np.float32)  # (T_ngl, 8)
+        elif args.time_encoding == "hour_sincos":
+            hours = np.asarray(self.ngl_time.hour, dtype=np.float32)
+            ang = 2.0 * np.pi * hours / 24.0
+            self.time_mark = np.stack([np.sin(ang), np.cos(ang)], axis=1).astype(np.float32)  # (T_ngl, 2)
+        elif args.time_encoding == "linear":
+            self.time_mark = time_features(self.ngl_time, freq=args.time_freq).T.astype(np.float32)  # (T_ngl, n_tf)
+        else:
+            self.time_mark = None
 
         # NGL resolution / window geometry (works for hourly or 5-minute stores).
         self.ngl_step_minutes = int(args.ngl_step_minutes)
@@ -308,6 +301,7 @@ class NowcastData:
         self.station_ncep_col: list[int] = []
         self.target: list[np.ndarray] = []  # (T_ncep, n_vars) float32
         self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo) pre-normalization
+        self.target_h_raw: list[float] = []  # target station height (m) per selected station
 
         for si, sid in enumerate(selected):
             if si % 10 == 0:
@@ -325,8 +319,9 @@ class NowcastData:
                 if t_info is None or g_info is None:
                     continue
                 de, dn, du = _enu(t_info, g_info)
-                row[j] = (de, dn, du, t_info[2], g_info[2])
+                row[j] = (de, dn, du, g_info[2])
             self.station_geo_raw.append(row)
+            self.target_h_raw.append(t_info[2] if t_info is not None else np.nan)
             if self.ngl_full is not None:
                 ztd = self.ngl_full["ztd"][:, cols].astype(np.float32, copy=False)
                 zwd = self.ngl_full["zwd"][:, cols].astype(np.float32, copy=False)
@@ -376,6 +371,7 @@ class NowcastData:
         self.samples: dict[str, list[np.ndarray]] = {f: [] for f in self.split_ranges}
         self._build_sample_index()
         self.ym, self.ys = self._train_scaler()
+        self._target_h_scaler()
         for flag in self.samples:
             print(f"[{flag}] stations={len(self.samples[flag])} samples={sum(len(s) for s in self.samples[flag])}", flush=True)
 
@@ -435,6 +431,54 @@ class NowcastData:
         std = np.sqrt(np.clip(var, 1e-12, None))
         return mean.astype(np.float32), std.astype(np.float32)
 
+    def _target_h_scaler(self) -> None:
+        """Z-score target-station heights with train-station statistics.
+
+        The target height is constant across the input window, so it cannot
+        pass through the per-variate instance normalization inside the model;
+        it is fed as a per-sample scalar to the separate_output linear layer.
+        Statistics come from stations that actually contribute train samples
+        (fall back to all selected stations if none do).
+        """
+        raw = np.asarray(self.target_h_raw, dtype=np.float64)  # (S,)
+        finite = np.isfinite(raw)
+        train_ok = np.array([len(s) > 0 for s in self.samples["train"]])
+        mask = finite & train_ok
+        if not mask.any():
+            mask = finite
+        if mask.any():
+            mean = float(raw[mask].mean())
+            std = float(raw[mask].std())
+        else:
+            mean, std = 0.0, 1.0
+        arr = np.where(finite, (raw - mean) / (std + 1e-6), 0.0)
+        self.target_h_mean = mean
+        self.target_h_std = std
+        self.target_h_arr = arr.astype(np.float32).reshape(-1, 1)  # (S, 1)
+        print(f"[data] target_h_mean={mean:.2f} m target_h_std={std:.2f} m "
+              f"(train stations={int(mask.sum())}/{len(raw)})", flush=True)
+
+    def save_scalers(self, out_dir: Path) -> None:
+        """Save normalization statistics needed for inference on new points.
+
+        geo_mean/geo_std (per-neighbor spatial encoding), target_h_mean/std
+        (target-station height feature) and ym/ys (target z-scoring) are all
+        computed from the training split; grid inference must reuse exactly
+        these values.
+        """
+        np.savez(
+            out_dir / "scalers.npz",
+            geo_mean=self.geo_mean,
+            geo_std=self.geo_std,
+            target_h_mean=np.float64(self.target_h_mean),
+            target_h_std=np.float64(self.target_h_std),
+            ym=self.ym,
+            ys=self.ys,
+            station_ids=np.asarray(self.station_ids, dtype=object),
+            target_h_raw=np.asarray(self.target_h_raw, dtype=np.float64),
+        )
+        print(f"[data] scalers saved to {out_dir / 'scalers.npz'}", flush=True)
+
     def make_sample(self, station_pos: int, t: int):
         ztd, zwd = self.station_ngl[station_pos]
         k = ztd.shape[1]
@@ -452,13 +496,18 @@ class NowcastData:
             x[:, 2 * max_k + j] = 1.0 if valid[j] else 0.0
         y = self.target[station_pos][t].astype(np.float32)
         y = np.nan_to_num((y - self.ym) / self.ys, nan=0.0).reshape(1, len(NCEP_VARS))
-        mark = self.time_mark[g0:g1]  # (7, 4) precomputed
-        y_mark = np.zeros((1, TIME_FEATURES), dtype=np.float32)
+        if self.time_mark is not None:
+            mark = self.time_mark[g0:g1]  # (win, n_tf) precomputed
+            y_mark = np.zeros((1, self.args.n_time_features), dtype=np.float32)
+        else:
+            mark = np.zeros((self.window_steps, 0), dtype=np.float32)
+            y_mark = np.zeros((1, 0), dtype=np.float32)
         # Positional encoding: per-neighbor ENU + heights, gated by per-sample validity.
         v = np.zeros(self.args.max_neighbors, dtype=np.float32)
         v[:k] = valid.astype(np.float32)
         x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo) float32
-        return x, y, mark, y_mark, x_geo
+        x_tgt = self.target_h_arr[station_pos]  # (1,) z-scored target height
+        return x, y, mark, y_mark, x_geo, x_tgt
 
 
 class GNSSNowcastDataset(Dataset):
@@ -491,13 +540,15 @@ def make_model_config(args: argparse.Namespace) -> argparse.Namespace:
     cfg.d_ff = args.d_ff
     cfg.dropout = args.dropout
     cfg.embed = "timeF"
-    cfg.freq = "h"
+    cfg.freq = args.time_freq
+    cfg.n_time_features = int(args.n_time_features)
     cfg.activation = args.activation
     cfg.factor = 1
     cfg.separate_output = True
-    cfg.spatial_enc = bool(getattr(args, "spatial_enc", False))
-    cfg.n_geo = int(getattr(args, "n_geo", 5))
-    cfg.spatial_mlp_hidden = int(getattr(args, "spatial_mlp_hidden", args.d_model))
+    cfg.spatial_enc = bool(args.spatial_enc)
+    cfg.n_geo = int(args.n_geo)
+    cfg.spatial_mlp_hidden = int(args.spatial_mlp_hidden)
+    cfg.target_h_feat = bool(args.target_h_feat)
     cfg.max_neighbors = int(args.max_neighbors)
     return cfg
 
@@ -520,14 +571,21 @@ def make_loader(data: NowcastData, flag: str, args: argparse.Namespace, shuffle:
 def evaluate(model: nn.Module, loader: DataLoader, cfg, criterion, device) -> float:
     model.eval()
     losses = []
-    for bx, by, bxm, bym, bxg in loader:
+    for bx, by, bxm, bym, bxg, bxt in loader:
         bx = bx.float().to(device)
         by = by.float().to(device)
-        bxm = bxm.float().to(device)
+        if cfg.n_time_features > 0:
+            bxm = bxm.float().to(device)
+        else:
+            bxm = None
         bxg = bxg.float().to(device)
+        bxt = bxt.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
-        y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
-        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
+        if cfg.n_time_features > 0:
+            y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+        else:
+            y_mark = None
+        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg, x_tgt=bxt)
         loss = criterion(out[:, -cfg.pred_len:, :], by[:, -cfg.pred_len:, :])
         losses.append(loss.item())
     model.train()
@@ -547,11 +605,15 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
               f"_dm{args.d_model}_el{args.e_layers}_nh{args.n_heads}_df{args.d_ff}"
     if args.spatial_enc:
         setting += "_sp"
+    if args.target_h_feat:
+        setting += "_thf"
     out_dir = args.out_root / setting
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "config_used.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump({k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
                        f, sort_keys=False)
+
+    data.save_scalers(out_dir)
 
     best_val = float("inf")
     patience = 0
@@ -561,15 +623,22 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
         model.train()
         ep_losses = []
         t0 = time.time()
-        for step, (bx, by, bxm, bym, bxg) in enumerate(train_loader, 1):
+        for step, (bx, by, bxm, bym, bxg, bxt) in enumerate(train_loader, 1):
             bx = bx.float().to(device)
             by = by.float().to(device)
-            bxm = bxm.float().to(device)
+            if cfg.n_time_features > 0:
+                bxm = bxm.float().to(device)
+            else:
+                bxm = None
             bxg = bxg.float().to(device)
+            bxt = bxt.float().to(device)
             dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
-            y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
+            if cfg.n_time_features > 0:
+                y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+            else:
+                y_mark = None
             optimizer.zero_grad()
-            out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
+            out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg, x_tgt=bxt)
             loss = criterion(out[:, -cfg.pred_len:, :], by[:, -cfg.pred_len:, :])
             loss.backward()
             optimizer.step()
@@ -612,13 +681,20 @@ def test(args: argparse.Namespace, data: NowcastData, model: nn.Module, cfg, out
 
     preds_norm, trues_norm = [], []
     model.eval()
-    for bx, by, bxm, bym, bxg in test_loader:
+    for bx, by, bxm, bym, bxg, bxt in test_loader:
         bx = bx.float().to(device)
-        bxm = bxm.float().to(device)
+        if cfg.n_time_features > 0:
+            bxm = bxm.float().to(device)
+        else:
+            bxm = None
         bxg = bxg.float().to(device)
+        bxt = bxt.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
-        y_mark = torch.zeros(bx.shape[0], cfg.pred_len, TIME_FEATURES, device=device)
-        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg)
+        if cfg.n_time_features > 0:
+            y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+        else:
+            y_mark = None
+        out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg, x_tgt=bxt)
         preds_norm.append(out[:, -cfg.pred_len:, :].detach().cpu().numpy())
         trues_norm.append(by[:, -cfg.pred_len:, :].numpy())
     preds_norm = np.concatenate(preds_norm, axis=0)
@@ -737,6 +813,16 @@ def main():
     cli = build_cli_parser().parse_args()
     args = load_config(cli.config, cli.set)
     args.seq_len = int(args.window_hours * 60 // args.ngl_step_minutes) + 1
+    if args.time_encoding == "none":
+        args.n_time_features = 0
+    elif args.time_encoding == "linear":
+        args.n_time_features = len(time_features_from_frequency_str(args.time_freq))
+    elif args.time_encoding == "hour_sincos":
+        args.n_time_features = 2
+    elif args.time_encoding == "sincos":
+        args.n_time_features = 8  # hour/day-of-week/day-of-month/day-of-year, each sin+cos
+    else:
+        raise SystemExit(f"unknown time_encoding: {args.time_encoding!r} (choose none|linear|hour_sincos|sincos)")
     print("effective config:")
     print(json.dumps(vars(args), indent=2, default=str))
     random.seed(args.seed)
