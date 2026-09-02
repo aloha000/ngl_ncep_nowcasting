@@ -25,6 +25,7 @@ import pandas as pd
 
 
 EARTH_RADIUS_KM = 6371.0088
+G0 = 9.80665
 SURF_RE = re.compile(r"surf_(\d{10})\.pkl$")
 
 
@@ -111,6 +112,8 @@ def _scan_surface_file(task):
     selected = frame.loc[keep].copy()
     missing_height = int(selected["h"].isna().sum())
     selected = selected.dropna(subset=["lat", "lon", "h"])
+    # NCEP surface h is geopotential; convert to geopotential height in metres.
+    selected["h"] = selected["h"].to_numpy(dtype=np.float64) / G0
     selected["lon"] = normalize_lon(selected["lon"].to_numpy())
     grouped = selected.groupby(["lat", "lon", "h"], sort=False, dropna=False).size()
     rows = [(*map(float, key), min(int(count), 65535)) for key, count in grouped.items()]

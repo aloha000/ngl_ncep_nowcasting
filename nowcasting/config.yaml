@@ -20,7 +20,7 @@ splits:            # UTC, half-open [start, end); empty end = end of data
   test_end: ""
 
 sampling:
-  stations: 0                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
+  stations: 8                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
   station_offset: 0            # skip this many target stations first
   max_neighbors: 5             # GNSS neighbors per target (channels = 2*this + this)
   min_valid_neighbors: 3       # minimum neighbors valid over T-6..T to keep a sample
@@ -36,7 +36,7 @@ model:
   spatial_enc: true            # per-neighbor positional encoding (ENU + heights), added to neighbor tokens
   time_encoding: linear        # best of 4 tested (test RMSE 8.35); none | linear | hour_sincos | sincos
   time_freq: h                 # used when time_encoding=linear: 'h' (best) or '5min'
-  n_geo: 4                     # [dE_km, dN_km, dU_m, ngl_h_m]; target height moved to output-head feature
+  n_geo: 4                     # 4=[dE_km,dN_km,dU_m,ngl_h_m]; 8 appends target/GNSS lat/lon in spatial_enc
   spatial_mlp_hidden: 128      # MLP hidden width for the spatial embedding
   target_h_feat: true          # z-scored target station height concatenated before the final linear layer
   d_model: 128

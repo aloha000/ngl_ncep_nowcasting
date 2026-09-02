@@ -28,6 +28,7 @@ class Model(nn.Module):
         # variates on purpose: per-variate instance normalization would zero out
         # any channel that is constant across the window.
         self.target_h_feat = bool(getattr(configs, "target_h_feat", False))
+        self.target_feat_dim = int(getattr(configs, "target_feat_dim", 1 if self.target_h_feat else 0))
         # Optional per-neighbor spatial (positional) encoding: geometry of each
         # GNSS neighbor relative to the target station (ENU + heights) is
         # embedded and added to that neighbor's input tokens before the encoder.
@@ -64,7 +65,7 @@ class Model(nn.Module):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=True)
             if self.separate_output:
-                out_in = configs.enc_in + (1 if self.target_h_feat else 0)
+                out_in = configs.enc_in + (self.target_feat_dim if self.target_h_feat else 0)
                 self.output_layer = nn.Linear(out_in, configs.c_out, bias=True)
         if self.task_name == 'imputation':
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
@@ -101,7 +102,7 @@ class Model(nn.Module):
             # variates. De-normalization is skipped because the output channels
             # do not correspond to the normalized input channels.
             if self.target_h_feat and x_tgt is not None:
-                # x_tgt: (B, 1) z-scored target-station feature -> (B, pred_len, 1)
+                # x_tgt: (B, target_feat_dim) z-scored target-station features.
                 dec_out = torch.cat(
                     [dec_out, x_tgt.unsqueeze(1).expand(-1, dec_out.shape[1], -1)], dim=-1
                 )

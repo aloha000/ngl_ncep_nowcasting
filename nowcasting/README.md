@@ -55,10 +55,13 @@ valid and all 6 target values are finite.
 
 | Path | Purpose |
 | --- | --- |
-| `nowcasting/train_iTransformer_nowcast.py` | data index + training + testing entry point |
+| `nowcasting/train_iTransformer_nowcast.py` | compatibility training entry point; delegates to `nowcasting/main_code/main.py` |
+| `nowcasting/main_code/` | modular training implementation (`config.py`, `dataset.py`, `model.py`, `train.py`, `plot.py`, `main.py`) |
+| `nowcasting/test/` | experiment/test plotting and grid-inference scripts |
 | `nowcasting/config.yaml` | all run parameters (data paths, splits, sampling, model, training, run) |
-| `nowcasting/EXPERIMENTS.md` | experiment log and conclusions (2026-08-27 ~ 08-28) |
+| `nowcasting/EXPERIMENTS.md` | experiment log and conclusions (2026-08-27 ~ 08-31) |
 | `nowcasting/outputs/<setting>/checkpoint.pth` | best checkpoint (by val loss) |
+| `nowcasting/outputs/gnss_nowcast_s1915_off0_h6_dm128_el2_nh4_df512_sp_thf/` | current best run: spatial encoding + target height before output head |
 | `nowcasting/outputs/<setting>/config_used.yaml` | effective config of the run (reproducibility) |
 | `nowcasting/outputs/<setting>/test_predictions.npz` | preds/trues (physical units) and normalized copies |
 | `nowcasting/outputs/<setting>/test_metrics.json` | per-variable MAE/MSE/RMSE on the test split |
@@ -81,7 +84,8 @@ ztd/zwd/mask tokens before the encoder; the output head and token layout are
 unchanged. Third: when `configs.target_h_feat` is set, the per-sample z-scored target-station
 height is concatenated as one extra channel to the token outputs just before the
 `separate_output` linear layer (its input becomes `enc_in + 1`), so the final layer learns a
-direct per-variable linear height term. All other tasks/runs are unchanged.
+direct per-variable linear height term. This is the current best configuration
+(best val 0.706 at epoch 5; test overall RMSE 8.15). All other tasks/runs are unchanged.
 
 ## How to run
 
@@ -136,3 +140,5 @@ version pair used to build the stores). `pyarrow`/`pandas` were already present.
   loss weighting to balance variable scales.
 - Add input feature engineering (bearing/distance/height-difference embeddings,
   NCEP history channels) and inverse/denormalization handling in the model.
+- Run focused ablations for the new `target_h_feat` head feature if attribution is needed
+  (for example target height only, spatial ENU only, or removing `ngl_h_m`).
