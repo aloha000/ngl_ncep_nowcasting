@@ -3,8 +3,8 @@
 
 For every 0.1-deg grid cell (treated as a virtual target station):
   - find the up-to-5 nearest NGL GNSS stations within 50 km (ranked by distance),
-  - build the same inputs as training (25-step 5-min ZTD/ZWD window + mask +
-    per-neighbor ENU/height spatial encoding + z-scored target height + linear
+  - build the same inputs as training (25-step 5-min ZTD/ZWD window +
+    per-neighbor ENU/height/static encoding + target height/static features + linear
     hour time marks),
   - run the trained iTransformer checkpoint, denormalize with training stats.
 
@@ -37,6 +37,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TSL_ROOT))
 
 import zarr  # noqa: E402
+import netCDF4  # noqa: E402
+from scipy.interpolate import RegularGridInterpolator  # noqa: E402
 from scipy.io import netcdf_file  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
 
@@ -81,6 +83,61 @@ def lat_lon_xy(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     return np.stack([x, y], axis=1)
 
 
+def lon_to_360(values: np.ndarray) -> np.ndarray:
+    return np.asarray(values, dtype=np.float64) % 360.0
+
+
+def nearest_indices(axis: np.ndarray, values: np.ndarray) -> np.ndarray:
+    axis = np.asarray(axis, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if axis[0] <= axis[-1]:
+        pos = np.searchsorted(axis, values)
+        left = np.clip(pos - 1, 0, len(axis) - 1)
+        right = np.clip(pos, 0, len(axis) - 1)
+    else:
+        rev = axis[::-1]
+        pos = np.searchsorted(rev, values)
+        left = len(axis) - 1 - np.clip(pos, 0, len(axis) - 1)
+        right = len(axis) - 1 - np.clip(pos - 1, 0, len(axis) - 1)
+    choose_right = np.abs(axis[right] - values) < np.abs(axis[left] - values)
+    return np.where(choose_right, right, left).astype(np.int64)
+
+
+def make_interpolator(lat: np.ndarray, lon: np.ndarray, field: np.ndarray) -> RegularGridInterpolator:
+    if lat[0] > lat[-1]:
+        lat_use = lat[::-1]
+        field_use = field[::-1, :]
+    else:
+        lat_use = lat
+        field_use = field
+    return RegularGridInterpolator(
+        (lat_use, lon), field_use, method="linear", bounds_error=False, fill_value=np.nan
+    )
+
+
+def sample_grid_static(const_nc: Path, grid_lat: np.ndarray, grid_lon: np.ndarray,
+                       expected_channels: np.ndarray, onehot: np.ndarray) -> np.ndarray:
+    with netCDF4.Dataset(const_nc) as ds:
+        channels = np.asarray([str(c) for c in ds.variables["channel"][:]], dtype=object).astype(str)
+        if channels.tolist() != expected_channels.tolist():
+            raise SystemExit("const.nc static channels do not match training station_static_const.npz")
+        lat = np.asarray(ds.variables["lat"][:], dtype=np.float64)
+        lon = np.asarray(ds.variables["lon"][:], dtype=np.float64)
+        x = np.asarray(ds.variables["x"][:], dtype=np.float32)
+    st_lon = lon_to_360(grid_lon)
+    pts = np.stack([grid_lat.astype(np.float64), st_lon], axis=1)
+    li = nearest_indices(lat, grid_lat)
+    oi = nearest_indices(lon, st_lon)
+    values = np.empty((len(grid_lat), x.shape[0]), dtype=np.float32)
+    for c in range(x.shape[0]):
+        if onehot[c]:
+            values[:, c] = x[c, li, oi]
+        else:
+            values[:, c] = make_interpolator(lat, lon, x[c])(pts).astype(np.float32)
+    values[~np.isfinite(values)] = 0.0
+    return values
+
+
 def load_dem() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return ETOPO2 x/lon, y/lat, z (lat,lon) heights."""
     print("[dem] loading ETOPO2 ...", flush=True)
@@ -118,6 +175,18 @@ def main() -> None:
     args = load_config(CONFIG_YAML, [])
     args.seq_len = int(args.window_hours * 60 // args.ngl_step_minutes) + 1
     args.n_time_features = 4  # time_encoding=linear, freq=h (fixed by config)
+    scal = np.load(RUN_OUT / "scalers.npz", allow_pickle=True)
+    geo_mean = scal["geo_mean"].astype(np.float32)
+    geo_std = scal["geo_std"].astype(np.float32)
+    target_feat_mean = scal["target_feat_mean"].astype(np.float32) if "target_feat_mean" in scal.files else None
+    target_feat_std = scal["target_feat_std"].astype(np.float32) if "target_feat_std" in scal.files else None
+    th_mean = float(scal["target_h_mean"])
+    th_std = float(scal["target_h_std"])
+    ym = scal["ym"].astype(np.float32)                  # (6,)
+    ys = scal["ys"].astype(np.float32)                  # (6,)
+    args.n_geo_total = int(len(geo_mean))
+    if args.target_h_feat:
+        args.target_feat_dim = int(len(target_feat_mean)) if target_feat_mean is not None else 1
     cfg = make_model_config(args)
     device = torch.device(DEVICE)
 
@@ -127,16 +196,8 @@ def main() -> None:
     model.load_state_dict(ckpt["model"])
     model.eval()
     print("[model] loaded", flush=True)
-
-    scal = np.load(RUN_OUT / "scalers.npz", allow_pickle=True)
-    geo_mean = scal["geo_mean"].astype(np.float32)      # (4,)
-    geo_std = scal["geo_std"].astype(np.float32)        # (4,)
-    th_mean = float(scal["target_h_mean"])
-    th_std = float(scal["target_h_std"])
-    ym = scal["ym"].astype(np.float32)                  # (6,)
-    ys = scal["ys"].astype(np.float32)                  # (6,)
-    print(f"[scalers] geo_mean={geo_mean.tolist()} geo_std={geo_std.tolist()}\n"
-          f"          target_h mean={th_mean:.1f} std={th_std:.1f} | ym={ym.tolist()} ys={ys.tolist()}",
+    print(f"[scalers] geo_dim={len(geo_mean)} target_feat_dim={cfg.target_feat_dim} "
+          f"target_h mean={th_mean:.1f} std={th_std:.1f} | ym={ym.tolist()} ys={ys.tolist()}",
           flush=True)
 
     # --- grid + DEM ---------------------------------------------------------
@@ -156,6 +217,16 @@ def main() -> None:
     g_lat = gst["lat"].to_numpy(np.float64)
     g_lon = gst["lon"].to_numpy(np.float64)
     g_h = gst["height_m"].to_numpy(np.float64)
+    static = np.load(args.station_static_npz, allow_pickle=True)
+    static_channels = np.asarray(static["channels"], dtype=object).astype(str)
+    static_onehot = np.asarray(static["onehot_mask"], dtype=bool)
+    static_dim = int(len(static_channels))
+    base_n_geo = int(args.n_geo)
+    use_static = cfg.n_geo == base_n_geo + static_dim
+    if cfg.n_geo not in (base_n_geo, base_n_geo + static_dim):
+        raise SystemExit(f"checkpoint expects n_geo={cfg.n_geo}, but config/static imply {base_n_geo} or {base_n_geo + static_dim}")
+    g_static = {str(sid): static["gnss_static"][i].astype(np.float32)
+                for i, sid in enumerate(static["gnss_station_ids"])}
     good = np.isfinite(g_lat) & np.isfinite(g_lon) & np.isfinite(g_h)
     gidx = np.flatnonzero(good)
     print(f"[nb] NGL stations: {len(g_lat)} total, {len(gidx)} usable", flush=True)
@@ -176,7 +247,7 @@ def main() -> None:
     print(f"[nb] cells covered (>= {MIN_VALID_NEIGHBORS} NGL within 50 km): "
           f"{covered.sum()}/{n_cells} ({100.0*covered.mean():.1f}%)", flush=True)
 
-    # per-neighbour geometry (same construction as training)
+    # per-neighbour geometry/static features (same construction as training)
     x_geo = np.zeros((n_cells, n_neigh, cfg.n_geo), dtype=np.float32)
     for c in range(n_cells):
         t_info = (float(lat_flat[c]), float(lon_flat[c]), float(h_flat[c]))
@@ -186,10 +257,25 @@ def main() -> None:
                 continue
             g_info = (float(g_lat[gi]), float(g_lon[gi]), float(g_h[gi]))
             de, dn, du = _enu(t_info, g_info)
-            x_geo[c, j] = (de, dn, du, g_h[gi])
+            if base_n_geo == 4:
+                geo_values = (de, dn, du, g_h[gi])
+            elif base_n_geo == 8:
+                geo_values = (de, dn, du, g_h[gi], lat_flat[c], lon_flat[c], g_lat[gi], g_lon[gi])
+            else:
+                raise SystemExit(f"unsupported n_geo={base_n_geo}; use 4 or 8")
+            x_geo[c, j, :base_n_geo] = geo_values
+            if use_static:
+                sid = str(gst["gnss_station_id"].iloc[int(gi)])
+                x_geo[c, j, base_n_geo:] = g_static.get(sid, np.zeros(static_dim, dtype=np.float32))
     x_geo = (x_geo - geo_mean) / geo_std
     x_geo[~np.isfinite(x_geo)] = 0.0
-    x_tgt = ((h_flat.astype(np.float32) - th_mean) / th_std).astype(np.float32)[:, None]
+    if cfg.target_feat_dim > 1:
+        const_nc = Path(str(static["const_nc"].item() if np.ndim(static["const_nc"]) == 0 else static["const_nc"]))
+        target_static = sample_grid_static(const_nc, lat_flat, lon_flat, static_channels, static_onehot)
+        x_tgt_raw = np.concatenate([h_flat.astype(np.float32)[:, None], target_static], axis=1)
+        x_tgt = ((x_tgt_raw - target_feat_mean) / target_feat_std).astype(np.float32)
+    else:
+        x_tgt = ((h_flat.astype(np.float32) - th_mean) / th_std).astype(np.float32)[:, None]
 
     # --- NGL data for the needed hours (small span read, no full-array load) -
     print("[data] opening NGL store ...", flush=True)
@@ -271,7 +357,6 @@ def main() -> None:
             zt = ztd_all[sl0:sl1, pos]; zw = zwd_all[sl0:sl1, pos]
             x[:, :, 2 * j] = np.where(ok[None, :], zt, 0.0).T
             x[:, :, 2 * j + 1] = np.where(ok[None, :], zw, 0.0).T
-            x[:, :, 2 * n_neigh + j] = ok.astype(np.float32)[:, None]
         xm = np.broadcast_to(mark_all[sl0:sl1], (n_cells, win, mark_all.shape[1])).copy()
         xg = x_geo * cell_valid[:, :, None]
         xt = x_tgt
@@ -279,7 +364,10 @@ def main() -> None:
         idx_keep = np.flatnonzero(keep)
         pred_norm = np.full((n_cells, len(NCEP_VARS)), np.nan, dtype=np.float32)
         dec_inp = torch.zeros(BATCH, cfg.pred_len, cfg.c_out, device=device)
-        y_mark = torch.zeros(BATCH, cfg.pred_len, cfg.n_time_features, device=device)
+        if cfg.n_time_features > 0:
+            y_mark_np = np.broadcast_to(mark_all[g1 - 1:g1], (n_cells, cfg.pred_len, cfg.n_time_features)).copy()
+        else:
+            y_mark_np = np.zeros((n_cells, cfg.pred_len, 0), dtype=np.float32)
         t0 = time.time()
         with torch.no_grad():
             for b0 in range(0, len(idx_keep), BATCH):
@@ -288,7 +376,8 @@ def main() -> None:
                 bxm = torch.from_numpy(xm[bi]).float().to(device)
                 bxg = torch.from_numpy(xg[bi]).float().to(device)
                 bxt = torch.from_numpy(xt[bi]).float().to(device)
-                out = model(bx, bxm, dec_inp[:len(bi)], y_mark[:len(bi)], x_geo=bxg, x_tgt=bxt)
+                bym = torch.from_numpy(y_mark_np[bi]).float().to(device) if cfg.n_time_features > 0 else None
+                out = model(bx, bxm, dec_inp[:len(bi)], bym, x_geo=bxg, x_tgt=bxt)
                 pred_norm[bi] = out[:, -1, :].cpu().numpy()
         preds[k].reshape(-1, len(NCEP_VARS))[:] = pred_norm * ys + ym
         print(f"  inference done in {time.time()-t0:.1f}s", flush=True)

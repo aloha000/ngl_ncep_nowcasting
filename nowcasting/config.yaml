@@ -9,6 +9,7 @@ data:
   neighbors_parquet: dataset/target_gnss_neighbors.parquet  # rank-ordered GNSS neighbors per target
   target_stations_parquet: dataset/target_stations.parquet  # target station lat/lon/height_m
   gnss_stations_parquet: dataset/gnss_stations.parquet      # GNSS station lat/lon/height_m
+  station_static_npz: dataset/station_static_const.npz        # const.nc sampled at NCEP/GNSS stations
   ngl_step_minutes: 5                        # NGL time resolution in minutes (1 = old hourly store)
 
 splits:            # UTC, half-open [start, end); empty end = end of data
@@ -22,7 +23,7 @@ splits:            # UTC, half-open [start, end); empty end = end of data
 sampling:
   stations: 8                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
   station_offset: 0            # skip this many target stations first
-  max_neighbors: 5             # GNSS neighbors per target (channels = 2*this + this)
+  max_neighbors: 5             # GNSS neighbors per target (encoder channels = 2*this)
   min_valid_neighbors: 3       # minimum neighbors valid over T-6..T to keep a sample
   hour_stride: 6               # subsample train hours (1 = keep all)
   val_stride: 1                # subsample val hours

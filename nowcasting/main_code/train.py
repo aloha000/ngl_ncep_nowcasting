@@ -30,7 +30,7 @@ def evaluate(model: nn.Module, loader: DataLoader, cfg, criterion, device) -> fl
         bxt = bxt.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
         if cfg.n_time_features > 0:
-            y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+            y_mark = bym.float().to(device)
         else:
             y_mark = None
         out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg, x_tgt=bxt)
@@ -55,6 +55,10 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
         setting += "_sp"
     if args.target_h_feat:
         setting += "_thf"
+    if cfg.target_feat_dim > (1 if args.target_h_feat else 0):
+        setting += "_const"
+    if cfg.decoder_time_feat:
+        setting += "_dt"
     out_dir = args.out_root / setting
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "config_used.yaml", "w", encoding="utf-8") as f:
@@ -82,7 +86,7 @@ def train(args: argparse.Namespace, data: NowcastData, device, cfg) -> tuple[nn.
             bxt = bxt.float().to(device)
             dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
             if cfg.n_time_features > 0:
-                y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+                y_mark = bym.float().to(device)
             else:
                 y_mark = None
             optimizer.zero_grad()
@@ -139,7 +143,7 @@ def test(args: argparse.Namespace, data: NowcastData, model: nn.Module, cfg, out
         bxt = bxt.float().to(device)
         dec_inp = torch.zeros(bx.shape[0], cfg.pred_len, cfg.c_out, device=device)
         if cfg.n_time_features > 0:
-            y_mark = torch.zeros(bx.shape[0], cfg.pred_len, cfg.n_time_features, device=device)
+            y_mark = bym.float().to(device)
         else:
             y_mark = None
         out = model(bx, bxm, dec_inp, y_mark, x_geo=bxg, x_tgt=bxt)

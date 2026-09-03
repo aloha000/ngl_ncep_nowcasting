@@ -88,8 +88,8 @@ class NowcastData:
         nb = nb[nb["rank"] <= args.max_neighbors].sort_values(["target_station_id", "rank"])   # 从邻近站表里筛选出前 N 个邻近站，并按（目标站, 排名）排好序
         neighbor_ids = nb.groupby("target_station_id")["gnss_station_id"].apply(list).to_dict()
 
-        # Station geometry for the positional encoding: per (target, neighbor)
-        # relative ENU position (target as origin) plus absolute heights.
+        # Station geometry/static features for the positional encoding: per (target, neighbor)
+        # relative ENU position (target as origin), absolute heights and const.nc features.
         # n_geo=4: [dE_km, dN_km, dU_m, ngl_h_m].
         # n_geo=8: append [target_lat, target_lon, gnss_lat, gnss_lon].
         target_st = pd.read_parquet(args.target_stations_parquet)
@@ -98,6 +98,20 @@ class NowcastData:
                  for s, r in target_st.set_index("target_station_id").iterrows()}
         g_geo = {str(s): (float(r.lat), float(r.lon), float(r.height_m))
                  for s, r in gnss_st.set_index("gnss_station_id").iterrows()}
+        static = np.load(args.station_static_npz, allow_pickle=True)
+        self.static_channels = np.asarray(static["channels"], dtype=object).astype(str)
+        self.static_onehot_mask = np.asarray(static["onehot_mask"], dtype=bool)
+        g_static = {str(s): static["gnss_static"][i].astype(np.float32)
+                    for i, s in enumerate(static["gnss_station_ids"])}
+        t_static = {str(s): static["target_static"][i].astype(np.float32)
+                    for i, s in enumerate(static["target_station_ids"])}
+        self.static_dim = int(len(self.static_channels))
+        self.base_n_geo = int(args.n_geo)
+        args.encoder_static_dim = self.static_dim
+        args.decoder_static_dim = self.static_dim
+        args.n_geo_total = self.base_n_geo + self.static_dim
+        print(f"[data] station static features={self.static_dim} "
+              f"onehot={self.static_channels[self.static_onehot_mask].tolist()}", flush=True)
 
         candidates = sorted(
             sid for sid, ids in neighbor_ids.items()
@@ -113,8 +127,9 @@ class NowcastData:
         self.station_ngl: list[tuple[np.ndarray, np.ndarray]] = []  # (ztd (T_ngl,k), zwd)
         self.station_ncep_col: list[int] = []
         self.target: list[np.ndarray] = []  # (T_ncep, n_vars) float32
-        self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo) pre-normalization
+        self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo + static_dim) pre-normalization
         self.target_h_raw: list[float] = []  # target station height (m) per selected station
+        self.target_static_raw: list[np.ndarray] = []  # const.nc static features per selected target
 
         for si, sid in enumerate(selected):
             if si % 10 == 0:
@@ -125,7 +140,7 @@ class NowcastData:
             cols = [self.ngl_col[g] for g in neighbor_ids[sid][: args.max_neighbors]]
             if any(c is None for c in cols) or not cols:
                 continue
-            row = np.zeros((args.max_neighbors, args.n_geo), dtype=np.float32)
+            row = np.zeros((args.max_neighbors, args.n_geo_total), dtype=np.float32)
             t_info = t_geo.get(sid)
             for j, gid in enumerate(neighbor_ids[sid][: args.max_neighbors]):
                 g_info = g_geo.get(gid)
@@ -133,16 +148,19 @@ class NowcastData:
                     continue
                 de, dn, du = _enu(t_info, g_info)
                 if args.n_geo == 4:
-                    row[j] = (de, dn, du, g_info[2])
+                    geo_values = (de, dn, du, g_info[2])
                 elif args.n_geo == 8:
-                    row[j] = (de, dn, du, g_info[2], t_info[0], t_info[1], g_info[0], g_info[1])
+                    geo_values = (de, dn, du, g_info[2], t_info[0], t_info[1], g_info[0], g_info[1])
                 else:
                     raise SystemExit(
                         f"unsupported n_geo={args.n_geo}; use 4 or 8 "
                         "([dE,dN,dU,ngl_h] plus optional target/GNSS lat/lon)"
                     )
+                row[j, :args.n_geo] = geo_values
+                row[j, args.n_geo:] = g_static.get(gid, np.zeros(self.static_dim, dtype=np.float32))
             self.station_geo_raw.append(row)
             self.target_h_raw.append(t_info[2] if t_info is not None else np.nan)
+            self.target_static_raw.append(t_static.get(sid, np.zeros(self.static_dim, dtype=np.float32)))
             if self.ngl_full is not None:
                 ztd = self.ngl_full["ztd"][:, cols].astype(np.float32, copy=False)
                 zwd = self.ngl_full["zwd"][:, cols].astype(np.float32, copy=False)
@@ -169,11 +187,16 @@ class NowcastData:
             flat = stacked[valid_geo]
             self.geo_mean = flat.mean(axis=0).astype(np.float32)
             self.geo_std = (flat.std(axis=0) + 1e-6).astype(np.float32)
+            # const.nc tvh_*/tvl_* channels are one-hot and must stay 0/1.
+            static_onehot = np.zeros(stacked.shape[2], dtype=bool)
+            static_onehot[self.base_n_geo:] = self.static_onehot_mask
+            self.geo_mean[static_onehot] = 0.0
+            self.geo_std[static_onehot] = 1.0
             self.station_geo_arr = ((stacked - self.geo_mean) / self.geo_std * valid_geo[..., None]).astype(np.float32)
         else:
-            self.geo_mean = np.zeros(args.n_geo, dtype=np.float32)
-            self.geo_std = np.ones(args.n_geo, dtype=np.float32)
-            self.station_geo_arr = np.zeros((self.n_stations, args.max_neighbors, args.n_geo), dtype=np.float32)
+            self.geo_mean = np.zeros(args.n_geo_total, dtype=np.float32)
+            self.geo_std = np.ones(args.n_geo_total, dtype=np.float32)
+            self.station_geo_arr = np.zeros((self.n_stations, args.max_neighbors, args.n_geo_total), dtype=np.float32)
         print(f"[data] station_geo={self.station_geo_arr.shape} "
               f"mean={self.geo_mean.tolist()} std={self.geo_std.tolist()}", flush=True)
 
@@ -275,10 +298,24 @@ class NowcastData:
         arr = np.where(finite, (raw - mean) / (std + 1e-6), 0.0)
         self.target_h_mean = mean
         self.target_h_std = std
-        self.target_feat_mean = np.asarray([mean], dtype=np.float64)
-        self.target_feat_std = np.asarray([std], dtype=np.float64)
-        self.target_feat_raw = raw.reshape(-1, 1).astype(np.float64)
-        self.target_h_arr = arr.astype(np.float32).reshape(-1, 1)  # (S, 1)
+        target_static = np.stack(self.target_static_raw, axis=0).astype(np.float64)
+        cont = ~self.static_onehot_mask
+        static_mean = np.zeros(self.static_dim, dtype=np.float64)
+        static_std = np.ones(self.static_dim, dtype=np.float64)
+        if cont.any():
+            static_mean[cont] = target_static[:, cont].mean(axis=0)
+            static_std[cont] = target_static[:, cont].std(axis=0) + 1e-6
+        target_static_norm = (target_static - static_mean) / static_std
+        # const.nc tvh_*/tvl_* channels are one-hot and must stay 0/1.
+        target_static_norm[:, self.static_onehot_mask] = target_static[:, self.static_onehot_mask]
+        self.target_feat_mean = np.concatenate([[mean], static_mean]).astype(np.float64)
+        self.target_feat_std = np.concatenate([[std], static_std]).astype(np.float64)
+        self.target_feat_raw = np.concatenate([raw.reshape(-1, 1), target_static], axis=1).astype(np.float64)
+        self.target_h_arr = np.concatenate([
+            arr.astype(np.float32).reshape(-1, 1),
+            target_static_norm.astype(np.float32),
+        ], axis=1)
+        self.args.target_feat_dim = int(self.target_h_arr.shape[1])
         print(f"[data] target_h_mean={mean:.2f} m target_h_std={std:.2f} m "
               f"(train stations={int(mask.sum())}/{len(raw)})", flush=True)
 
@@ -303,6 +340,8 @@ class NowcastData:
             station_ids=np.asarray(self.station_ids, dtype=object),
             target_h_raw=np.asarray(self.target_h_raw, dtype=np.float64),
             target_feat_raw=self.target_feat_raw,
+            static_channels=self.static_channels,
+            static_onehot_mask=self.static_onehot_mask,
         )
         print(f"[data] scalers saved to {out_dir / 'scalers.npz'}", flush=True)
 
@@ -310,29 +349,28 @@ class NowcastData:
         ztd, zwd = self.station_ngl[station_pos]
         k = ztd.shape[1]
         max_k = self.args.max_neighbors
-        n_chan = 2 * max_k + max_k
+        n_chan = 2 * max_k
         g0 = t * self.ngl_steps_per_hour + self.ngl_offset - (self.window_steps - 1)
         g1 = g0 + self.window_steps                # exclusive
-        wz = np.isfinite(ztd[g0:g1]) & np.isfinite(zwd[g0:g1])  # (7, k)
+        wz = np.isfinite(ztd[g0:g1]) & np.isfinite(zwd[g0:g1])  # (window, k)
         valid = wz.all(axis=0)
         x = np.zeros((self.window_steps, n_chan), dtype=np.float32)
         for j in range(k):
             if valid[j]:
                 x[:, 2 * j] = ztd[g0:g1, j]
                 x[:, 2 * j + 1] = zwd[g0:g1, j]
-            x[:, 2 * max_k + j] = 1.0 if valid[j] else 0.0
         y = self.target[station_pos][t].astype(np.float32)
         y = np.nan_to_num((y - self.ym) / self.ys, nan=0.0).reshape(1, len(NCEP_VARS))
         if self.time_mark is not None:
             mark = self.time_mark[g0:g1]  # (win, n_tf) precomputed
-            y_mark = np.zeros((1, self.args.n_time_features), dtype=np.float32)
+            y_mark = self.time_mark[g1 - 1:g1]  # target time T, used by the decoder head
         else:
             mark = np.zeros((self.window_steps, 0), dtype=np.float32)
             y_mark = np.zeros((1, 0), dtype=np.float32)
-        # Positional encoding: per-neighbor ENU + heights, gated by per-sample validity.
+        # Positional/static encoding is still gated by per-sample validity.
         v = np.zeros(self.args.max_neighbors, dtype=np.float32)
         v[:k] = valid.astype(np.float32)
-        x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo) float32
+        x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo_total) float32
         x_tgt = self.target_h_arr[station_pos]  # z-scored target-level output-head features
         return x, y, mark, y_mark, x_geo, x_tgt
 

@@ -29,12 +29,14 @@ class Model(nn.Module):
         # any channel that is constant across the window.
         self.target_h_feat = bool(getattr(configs, "target_h_feat", False))
         self.target_feat_dim = int(getattr(configs, "target_feat_dim", 1 if self.target_h_feat else 0))
-        # Optional per-neighbor spatial (positional) encoding: geometry of each
-        # GNSS neighbor relative to the target station (ENU + heights) is
-        # embedded and added to that neighbor's input tokens before the encoder.
+        self.decoder_time_feat = bool(getattr(configs, "decoder_time_feat", False))
+        self.decoder_time_dim = int(getattr(configs, "decoder_time_dim", 0))
+        # Optional per-neighbor spatial/static encoding: geometry of each GNSS
+        # neighbor relative to the target station plus static fields is embedded
+        # and added to that neighbor's input tokens before the encoder.
         self.spatial_enc = bool(getattr(configs, "spatial_enc", False))
         self.max_neighbors = int(getattr(configs, "max_neighbors", 0))
-        self.channels_per_neighbor = (int(getattr(configs, "enc_in", 0)) // self.max_neighbors) if self.max_neighbors else 3
+        self.channels_per_neighbor = (int(getattr(configs, "enc_in", 0)) // self.max_neighbors) if self.max_neighbors else 2
         if self.spatial_enc:
             n_geo = int(getattr(configs, "n_geo", 5))
             mlp_hidden = int(getattr(configs, "spatial_mlp_hidden", configs.d_model))
@@ -65,7 +67,9 @@ class Model(nn.Module):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             self.projection = nn.Linear(configs.d_model, configs.pred_len, bias=True)
             if self.separate_output:
-                out_in = configs.enc_in + (self.target_feat_dim if self.target_h_feat else 0)
+                out_in = configs.enc_in + self.target_feat_dim
+                if self.decoder_time_feat:
+                    out_in += self.decoder_time_dim
                 self.output_layer = nn.Linear(out_in, configs.c_out, bias=True)
         if self.task_name == 'imputation':
             self.projection = nn.Linear(configs.d_model, configs.seq_len, bias=True)
@@ -89,7 +93,7 @@ class Model(nn.Module):
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
         if self.spatial_enc and x_geo is not None:
             # x_geo: (B, max_neighbors, n_geo) -> (B, max_neighbors, d_model);
-            # each neighbor contributes the same embedding to its ztd/zwd/mask tokens.
+            # each neighbor contributes the same embedding to its ztd/zwd tokens.
             emb = self.spatial_embed(x_geo)
             emb = emb.unsqueeze(2).expand(-1, -1, self.channels_per_neighbor, -1)
             emb = emb.reshape(emb.shape[0], -1, emb.shape[-1])
@@ -101,11 +105,15 @@ class Model(nn.Module):
             # Input and output variates differ; map input tokens to the target
             # variates. De-normalization is skipped because the output channels
             # do not correspond to the normalized input channels.
-            if self.target_h_feat and x_tgt is not None:
-                # x_tgt: (B, target_feat_dim) z-scored target-station features.
+            if self.target_feat_dim > 0 and x_tgt is not None:
+                # x_tgt: (B, target_feat_dim) z-scored/static target-station features.
                 dec_out = torch.cat(
                     [dec_out, x_tgt.unsqueeze(1).expand(-1, dec_out.shape[1], -1)], dim=-1
                 )
+            if self.decoder_time_feat:
+                if x_mark_dec is None:
+                    x_mark_dec = dec_out.new_zeros(dec_out.shape[0], dec_out.shape[1], self.decoder_time_dim)
+                dec_out = torch.cat([dec_out, x_mark_dec[:, -dec_out.shape[1]:, :]], dim=-1)
             dec_out = self.output_layer(dec_out)
         else:
             # De-Normalization from Non-stationary Transformer

@@ -23,7 +23,7 @@ def parse_utc(value: str):
 REQUIRED_KEYS = {
     # data
     "ngl_zarr", "ncep_zarr", "neighbors_parquet", "target_stations_parquet",
-    "gnss_stations_parquet", "ngl_step_minutes",
+    "gnss_stations_parquet", "station_static_npz", "ngl_step_minutes",
     # temporal splits
     "train_start", "train_end", "val_start", "val_end", "test_start", "test_end",
     # station/time sampling
@@ -41,7 +41,7 @@ REQUIRED_KEYS = {
 }
 
 PATH_KEYS = ("ngl_zarr", "ncep_zarr", "neighbors_parquet",
-             "target_stations_parquet", "gnss_stations_parquet", "out_root")
+             "target_stations_parquet", "gnss_stations_parquet", "station_static_npz", "out_root")
 
 
 def _flatten(mapping: dict) -> dict:

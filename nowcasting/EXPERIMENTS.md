@@ -51,7 +51,7 @@ test 2024-03~2024-08。除特别说明外均为全站 1915、`hour_stride=6`、`
    注意窗口长度与分辨率同时改变，未单独归因。
 2. **空间编码是最大功臣**（13.43 → 8.35）：以目标站为原点的 ENU 相对位置
    `[dE_km, dN_km, dU_m, ngl_h]`（WGS84 ECEF→ENU，dU = ngl_h − target_h），
-   z-score 后经小 MLP（4→d_model）加到该邻近站的 ztd/zwd/mask 三个 token 上。
+   z-score 后经小 MLP（4→d_model）加到该邻近站的 ztd/zwd 两个 token 上。
    p 的改善是“水准面级”的：基线每站偏 ~24 hPa（回归到全局平均气压），空间编码
    用绝对高度把站的气压水平锚对，逐站误差降到 3.5–10.5 hPa。
 3. **目标站高度放到输出头前有用，但 NCEP 高度单位要先修正**：`target_h_feat: true` 将目标站
@@ -71,22 +71,21 @@ test 2024-03~2024-08。除特别说明外均为全站 1915、`hour_stride=6`、`
 
 ## 5. 特征/代码改动
 
-- `spatial_enc: true`：per-neighbor 位置编码，模型侧小 MLP 加到该站 3 个 token 上；
+- `spatial_enc: true`：per-neighbor 位置编码，模型侧小 MLP 加到该站 2 个 token 上；
   输出头与 token 布局不变，`false` 时行为与旧版逐位一致。`n_geo=4` 为
   `[dE_km, dN_km, dU_m, ngl_h]`；`n_geo=8` 追加
   `[target_lat, target_lon, gnss_lat, gnss_lon]`，这是 #12 当前最佳空间特征。
 - `target_h_feat: true`：目标站绝对高度作为每样本标量，在最后 `separate_output`
   线性回归前拼接。NCEP target station 原始 `h` 为 geopotential，已按 `/9.80665`
   转成 geopotential height 后使用。
-- `time_encoding: none | linear | hour_sincos`：none 无时间标记（15 token）；
+- `time_encoding: none | linear | hour_sincos`：none 无时间标记（10 token）；
   linear 用 TSL timeF 特征（`time_freq` 控制，如 `h`/`5min`）；hour_sincos 为
   `[sin(2πh/24), cos(2πh/24)]`（2 通道）。
 - 代码结构：训练实现拆到 `nowcasting/main_code/`（config/dataset/model/train/plot/main），
   `nowcasting/train_iTransformer_nowcast.py` 保留为兼容入口；绘图/网格推理脚本移到
   `nowcasting/test/`。
 - 配置收敛：脚本删除 `DEFAULTS`，所有参数只从 `config.yaml` 读取，缺失/未知键启动报错。
-- mask 通道分析：per-variate 实例归一化会清零常数通道，mask 在当前实现中不携带信息
-  （有效性由 ztd/zwd 零填充隐式表达），未做消融实验。
+- mask 通道已从 encoder 输入移除；有效性仍用于筛样本和门控 x_geo，缺测邻站的 ztd/zwd 保持零填充。
 
 ## 6. 运行环境注意事项
 
@@ -105,7 +104,7 @@ test 2024-03~2024-08。除特别说明外均为全站 1915、`hour_stride=6`、`
   全测试集推理已完成（test samples 1,259,729，batches 4,921），test overall RMSE 8.02，
   输出见
   `nowcasting/outputs/gnss_nowcast_hg_ll_s1915_off0_h6_dm128_el2_nh4_df512_sp_thf/`。
-- 可选的后续实验：mask 通道消融（10 通道版）、更大模型 + 调低 lr、
+- 可选的后续实验：去掉 mask 后的 10 通道版复训、更大模型 + 调低 lr、
   `num_workers`/`batch_size` 提速、经纬度编码方式消融（原始 lat/lon vs sin/cos/归一化投影）。
 
 ## 8. 可视化输出

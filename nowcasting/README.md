@@ -24,25 +24,23 @@ Boundaries are configurable via `--train-start/--train-end/--val-start/--val-end
 
 Per sample:
 
-- Input `x`: `(seq_len, 15)` float32, where `seq_len = window_hours*60/ngl_step_minutes + 1` (default 25)
+- Input `x`: `(seq_len, 10)` float32, where `seq_len = window_hours*60/ngl_step_minutes + 1` (default 25)
   - channels `0..9`: `ztd`, `zwd` of the up-to-5 nearest GNSS stations (rank 1..5,
     from `dataset/target_gnss_neighbors.parquet`), zero-padded when a station is
-    missing from the input window;
-  - channels `10..14`: 0/1 validity mask per neighbor (1 = the neighbor has finite
-    ZTD **and** ZWD at all seq_len window steps).
+    missing from the input window.
 - Time marks `x_mark` (optional): `time_encoding: none` passes no marks
-  (`x_mark=None`, 15 tokens); `hour_sincos` adds `[sin(2πh/24), cos(2πh/24)]`
+  (`x_mark=None`, 10 tokens); `hour_sincos` adds `[sin(2πh/24), cos(2πh/24)]`
   (2 channels); `sincos` adds sin/cos pairs for hour/day-of-week/day-of-month/
   day-of-year (8 channels); `linear` uses TSL timeF features at `model.time_freq`
   resolution (`5min`: minute-of-hour/hour/day-of-week/day-of-month/day-of-year).
-- Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, 4)` per-sample,
-  `[dE_km, dN_km, dU_m, ngl_h_m]` per neighbor — the neighbor position in the target's local
-  ENU frame (target = origin) plus the neighbor's absolute height, z-scored with
-  train-pair statistics and zeroed for invalid/missing neighbors. A small MLP embeds each
-  neighbor's geometry and adds it to that neighbor's ztd/zwd/mask tokens before the encoder.
-- Target-station feature `x_tgt` (when `model.target_h_feat: true`): a per-sample z-scored
-  scalar (the target station's absolute height, train-station statistics), concatenated to
-  the token outputs right before the `separate_output` linear layer. Kept out of the input
+- Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, n_geo + static_dim)` per-sample.
+  The first columns are `[dE_km, dN_km, dU_m, ngl_h_m]` plus optional target/GNSS lat/lon;
+  const.nc static GNSS features are appended after them. The full vector is normalized with
+  train-pair statistics, zeroed for invalid/missing neighbors, embedded by a small MLP, and
+  added to that neighbor's ztd/zwd tokens before the encoder.
+- Target-station feature `x_tgt` (when `model.target_h_feat: true`): per-sample target height
+  plus target const.nc static features, normalized with train-station statistics and concatenated
+  to the token outputs right before the `separate_output` linear layer. Kept out of the input
   variates on purpose: per-variate instance normalization would zero out any channel that
   is constant across the window.
 - Target `y`: `(1, 6)` NCEP variables at T, z-scored with train-split statistics
@@ -79,11 +77,11 @@ features. First: when `configs.separate_output` is set (our script sets it), a f
 variates, and the non-stationary de-normalization is skipped because the output
 channels are not the input channels. Second: when `configs.spatial_enc` is set,
 a small MLP (`Linear(n_geo→d_model)→GELU→Linear(d_model→d_model)`) embeds the
-per-neighbor ENU/height vector and the result is added to that neighbor's
-ztd/zwd/mask tokens before the encoder; the output head and token layout are
-unchanged. Third: when `configs.target_h_feat` is set, the per-sample z-scored target-station
-height is concatenated as one extra channel to the token outputs just before the
-`separate_output` linear layer (its input becomes `enc_in + 1`), so the final layer learns a
+per-neighbor ENU/height/static vector and the result is added to that neighbor's
+ztd/zwd tokens before the encoder; the output head and token layout are
+unchanged. Third: when `configs.target_h_feat` is set, the per-sample target-station
+features are concatenated to the token outputs just before the
+`separate_output` linear layer (its input becomes `enc_in + target_feat_dim`), so the final layer learns a
 direct per-variable linear height term. This is the current best configuration
 (best val 0.706 at epoch 5; test overall RMSE 8.15). All other tasks/runs are unchanged.
 
