@@ -6,6 +6,8 @@
 data:
   ngl_zarr: dataset/ngl_5min.zarr            # 5-minute NGL ZTD/ZWD store
   ncep_zarr: dataset/ncep_hourly.zarr        # hourly NCEP surface store
+  use_era5: false                            # false = GNSS-only baseline; ERA5 store is not opened
+  era5_zarr: dataset/era5_hourly_us_2018_2024_standardized.zarr  # hourly standardized ERA5 background fields
   neighbors_parquet: dataset/target_gnss_neighbors.parquet  # rank-ordered GNSS neighbors per target
   target_stations_parquet: dataset/target_stations.parquet  # target station lat/lon/height_m
   gnss_stations_parquet: dataset/gnss_stations.parquet      # GNSS station lat/lon/height_m
@@ -34,12 +36,13 @@ sampling:
 model:
   window_hours: 2              # input window T-window_hours .. T (5min -> 25 steps); seq_len derived
   pred_len: 1                  # nowcast horizon
-  spatial_enc: true            # per-neighbor positional encoding (ENU + heights), added to neighbor tokens
+  spatial_enc: true            # append geometry/static to each neighbour ZTD/ZWD embedding (no MLP)
   time_encoding: linear        # best of 4 tested (test RMSE 8.35); none | linear | hour_sincos | sincos
   time_freq: h                 # used when time_encoding=linear: 'h' (best) or '5min'
   n_geo: 4                     # 4=[dE_km,dN_km,dU_m,ngl_h_m]; 8 appends target/GNSS lat/lon in spatial_enc
-  spatial_mlp_hidden: 128      # MLP hidden width for the spatial embedding
+  spatial_mlp_hidden: 128      # retained for config compatibility; unused by direct concatenation
   target_h_feat: true          # z-scored target station height concatenated before the final linear layer
+  era5_cache_hours: 24         # per-worker hourly ERA5 grid slices kept in RAM
   d_model: 128
   n_heads: 4
   e_layers: 2

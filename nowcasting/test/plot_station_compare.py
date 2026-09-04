@@ -6,6 +6,9 @@ colorbar per variable below its column (1-99 pct of the union of the three datas
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import netCDF4
@@ -15,11 +18,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss"
-RUN = f"{ROOT}/nowcasting/outputs/gnss_nowcast_hg_ll_s1915_off0_h6_dm128_el2_nh4_df512_sp_thf"
+RUN = f"{ROOT}/nowcasting/outputs/gnss_nowcast_gnssonly_globalnorm_s1915_off0_h6_dm128_el2_nh4_df512_sp_thf_const_dt"
 ERA5_DIR = "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/xuxiaoze/data_prep/era5_1h"
 VARS = ["p", "slp", "t2m", "r2m", "u10", "v10"]
-TIMES = ["2024-03-14T00:00", "2024-05-20T12:00", "2024-06-01T12:00",
-         "2024-07-04T18:00", "2024-08-10T06:00"]
+SEED = 2021
+N_RANDOM_TIMES = 3
 G, R = 9.80665, 287.05
 
 
@@ -59,14 +62,33 @@ def era5_at_stations(fname: str, lat: np.ndarray, lon: np.ndarray,
 d = np.load(f"{RUN}/test_predictions.npz")
 preds = d["preds"][:, 0, :]
 trues = d["trues"][:, 0, :]
-m = np.load(f"{RUN}/test_sample_map.npz", allow_pickle=True)
-station_ids = m["station_ids"]
-times = pd.DatetimeIndex(pd.to_datetime(m["times"]))
+if "station_ids" in d and "time_utc" in d:
+    station_ids = d["station_ids"].astype(str)
+    times = pd.DatetimeIndex(pd.to_datetime(d["time_utc"]))
+else:
+    m = np.load(f"{RUN}/test_sample_map.npz", allow_pickle=True)
+    station_ids = m["station_ids"].astype(str)
+    times = pd.DatetimeIndex(pd.to_datetime(m["times"]))
+if times.tz is None:
+    times = times.tz_localize("UTC")
+else:
+    times = times.tz_convert("UTC")
 
 st = pd.read_parquet(f"{ROOT}/dataset/target_stations.parquet")
 geo = st.set_index("target_station_id")[["lat", "lon", "height_m"]].to_dict("index")
 
-for tstr in TIMES:
+available_times = [ts for ts in np.unique(times)
+                   if Path(ERA5_DIR, f"{ts:%Y%m%d%H}.nc").is_file()]
+if len(available_times) < N_RANDOM_TIMES:
+    raise RuntimeError(f"only {len(available_times)} test times have matching ERA5 files")
+selected_times = sorted(np.random.default_rng(SEED).choice(
+    available_times, size=N_RANDOM_TIMES, replace=False
+))
+(Path(RUN) / "station_cmp_random_times.json").write_text(
+    json.dumps({"seed": SEED, "times_utc": [ts.isoformat() for ts in selected_times]}, indent=2)
+)
+for ts in selected_times:
+    tstr = ts.strftime("%Y-%m-%dT%H:%M")
     ts = pd.Timestamp(tstr, tz="UTC")
     idx = np.flatnonzero(times == ts)
     if len(idx) == 0:

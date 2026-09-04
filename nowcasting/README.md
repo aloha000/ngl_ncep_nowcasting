@@ -1,4 +1,6 @@
-# GNSS → NCEP nowcasting with iTransformer
+| `nowcasting/outputs/<setting>/test_timeseries.png` | pred vs truth time-series snippet |
+| `nowcasting/outputs/<setting>/test_timeseries_<station_id>.png` | full test-period truth/pred plots for 5 seed-selected stations (six variables per plot) |
+| `nowcasting/outputs/<setting>/test_random_station_timeseries.json` | selected station IDs and random seed |# GNSS → NCEP nowcasting with iTransformer
 
 ## Task
 
@@ -36,8 +38,8 @@ Per sample:
 - Spatial encoding `x_geo` (when `model.spatial_enc: true`): `(max_neighbors, n_geo + static_dim)` per-sample.
   The first columns are `[dE_km, dN_km, dU_m, ngl_h_m]` plus optional target/GNSS lat/lon;
   const.nc static GNSS features are appended after them. The full vector is normalized with
-  train-pair statistics, zeroed for invalid/missing neighbors, embedded by a small MLP, and
-  added to that neighbor's ztd/zwd tokens before the encoder.
+  train-pair statistics and zeroed for invalid/missing neighbors. For each neighbor, that same
+  vector is concatenated directly to both its ZTD and ZWD embeddings before the encoder (no MLP).
 - Target-station feature `x_tgt` (when `model.target_h_feat: true`): per-sample target height
   plus target const.nc static features, normalized with train-station statistics and concatenated
   to the token outputs right before the `separate_output` linear layer. Kept out of the input
@@ -76,10 +78,9 @@ features. First: when `configs.separate_output` is set (our script sets it), a f
 `nn.Linear(enc_in, c_out)` maps the per-input-variate projections to the target
 variates, and the non-stationary de-normalization is skipped because the output
 channels are not the input channels. Second: when `configs.spatial_enc` is set,
-a small MLP (`Linear(n_geo→d_model)→GELU→Linear(d_model→d_model)`) embeds the
-per-neighbor ENU/height/static vector and the result is added to that neighbor's
-ztd/zwd tokens before the encoder; the output head and token layout are
-unchanged. Third: when `configs.target_h_feat` is set, the per-sample target-station
+the per-neighbor ENU/height/static vector is directly concatenated to each corresponding
+ZTD/ZWD token embedding before the encoder (no MLP); the encoder hidden size therefore becomes
+`d_model + n_geo_total` (and adds `era5_dim` when ERA5 is enabled). Third: when `configs.target_h_feat` is set, the per-sample target-station
 features are concatenated to the token outputs just before the
 `separate_output` linear layer (its input becomes `enc_in + target_feat_dim`), so the final layer learns a
 direct per-variable linear height term. This is the current best configuration
@@ -110,6 +111,26 @@ python nowcasting/train_iTransformer_nowcast.py --set stations=128 --set epochs=
 # currently ~1915 stations meet min_valid_neighbors=3; ~36M train hours with hour_stride=1
 python nowcasting/train_iTransformer_nowcast.py --set stations=0 --set hour_stride=6
 ```
+
+### GNSS-only full-station run with a log
+
+The default configuration currently disables ERA5 (`use_era5: false`) and uses
+training-split global ZTD/ZWD statistics. To make that explicit, train all usable
+stations and mirror both stdout and stderr to a timestamped log:
+
+```bash
+conda activate gnss
+mkdir -p nowcasting/logs
+LOG_PATH="nowcasting/logs/gnss_only_allstations_$(date -u +%Y%m%d_%H%M%S).log"
+set -o pipefail
+python nowcasting/train_iTransformer_nowcast.py \
+  --set use_era5=false --set stations=0 --set hour_stride=6 2>&1 | tee "$LOG_PATH"
+```
+
+`tee` both prints progress to the terminal and writes it to `$LOG_PATH`;
+`set -o pipefail` preserves a non-zero training exit code if the run fails. Each
+run also saves `config_used.yaml` and `scalers.npz` (including `input_mean` and
+`input_std`) in its output directory.
 
 The effective (merged) config is printed at startup and saved as
 `config_used.yaml` next to the checkpoint. Unknown config keys or `--set` keys

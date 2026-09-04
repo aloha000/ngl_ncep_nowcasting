@@ -10,3 +10,11 @@ if str(TSL_ROOT) not in sys.path:
 
 NCEP_VARS = ["p", "slp", "t2m", "r2m", "u10", "v10"]
 NGL_VARS = ["ztd", "zwd"]
+
+# ERA5 pressure-level background fields used by GNSS nowcasting. Surface
+# fields (t2m/u10/v10/msl/tp) and levels below 700 hPa are intentionally out.
+ERA5_BACKGROUND_CHANNELS = [
+    f"{variable}{level}"
+    for variable in ("z", "t", "u", "v", "r")
+    for level in (50, 100, 150, 200, 250, 300, 400, 500, 600, 700)
+]

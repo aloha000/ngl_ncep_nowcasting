@@ -1,0 +1,180 @@
+flowchart TB
+    subgraph S0[一 数据源与固定字段]
+        A1[ngl_5min.zarr
+时间: 5分钟
+字段: ztd zwd
+维度: T_ngl x N_gnss]
+        A2[ncep_hourly.zarr
+时间: 1小时
+标签: p slp t2m r2m u10 v10
+维度: T_ncep x N_target]
+        A3[era5_hourly_us_2018_2024_standardized.zarr
+时间: 1小时 网格: 104 x 241 分辨率: 0.25度
+z: T_era5 x 70 x 104 x 241]
+        A4[target_gnss_neighbors.parquet
+每个目标站的 rank 排序 GNSS 邻站]
+        A5[target/gnss station parquet + station_static_const.npz
+经纬度 高度 const.nc 静态特征20维]
+    end
+
+    subgraph S1[二 NowcastData 初始化]
+        B1[读取 NGL NCEP ERA5 时间轴
+统一为 UTC]
+        B2[时间对齐
+era5_ncep_idx[t] = ERA5 中与 NCEP t 对应的行
+ERA5 缺失的 NCEP 时刻不进入样本]
+        B3[ERA5 通道选择 固定顺序50维
+z/t/u/v/r x 50 100 150 200 250 300 400 500 600 700 hPa
+明确不使用 t2m u10 v10 msl tp]
+        B4[邻站关系
+每目标站最多 K=5 个 GNSS 邻站
+少于 min_valid_neighbors 的候选目标站不选]
+        B5[静态与空间特征
+每邻站 x_geo: ENU相对位置 dE dN dU + GNSS高度 + 静态20维
+每目标站 x_tgt: 目标高度 + 目标静态20维]
+        B6[预计算站点 ERA5 双线性查表
+每 GNSS 邻站和目标站保存4个角点
+(lat索引 lon索引 权重) x 4]
+        B7[归一化统计
+NCEP y: 只用 train split 计算均值标准差
+高度/连续静态: train station 统计
+const.nc one-hot 通道保持0/1]
+    end
+
+    subgraph S2[三 样本索引 构建于每个目标站]
+        C1[对每个 NCEP 小时 t 计算 GNSS 窗口
+g0 = t * 每小时NGL步数 + 时间偏移 - 窗口长度+1
+g1 = g0 + 窗口长度
+默认窗口: T-2小时到T = 25个5分钟步]
+        C2[每个邻站检查 ztd 与 zwd
+窗口 g0:g1 必须全有限]
+        C3[保留条件同时满足
+有效邻站数 >= min_valid_neighbors
+6个 NCEP 标签在 t 均有限
+ERA5 在 t 存在]
+        C4[按 UTC 划分 train val test
+再使用 hour_stride/val_stride/test_stride 下采样]
+    end
+
+    subgraph S3[四 Dataset.make_sample 目标站s 时刻T]
+        D1[取得 K 个邻站 GNSS 窗口]
+        D2[x: window x 2K
+通道顺序: ztd_1 zwd_1 ztd_2 zwd_2 ...
+无效邻站整条 ztd/zwd 保持0]
+        D3[mark: window x n_time_features
+y_mark: 1 x n_time_features 仅目标时刻T]
+        D4[valid: K
+按每邻站窗口全有限得到]
+        D5[x_geo: K x 24
+station_geo_arr 乘 valid
+无效邻站空间/静态编码也置0]
+        D6[ERA5 物理chunk缓存
+Zarr原始chunk: 6小时 x 70 x 104 x 241
+按 chunk_id=floor(era5_t/6) 缓存
+每块只读取50个压力层通道]
+        D7[对每个GNSS邻站的4角点加权
+x_era5_enc: K x 50
+再乘 valid 邻站门控]
+        D8[对目标站的4角点加权
+x_era5_tgt: 50]
+        D9[y: 1 x 6
+(NCEP[T]-train_mean)/train_std]
+        D10[测试元数据
+station_id 与 NCEP 时间索引t]
+    end
+
+    subgraph S4[五 DataLoader 与 ERA5 I/O 优化]
+        E1[按 ERA5 6小时物理chunk给样本分组
+同一chunk的站点样本连续]
+        E2[训练: chunk顺序随机
+同一chunk内部随机但仍连续]
+        E3[验证/测试: chunk顺序稳定
+方便单worker复用同一块缓存]
+        E4[batch_size=2048 num_workers=1
+避免多个worker重复解压同一ERA5块
+提高A100单batch计算密度]
+    end
+
+    subgraph S5[六 iTransformer 前向]
+        F1[输入 x: B x window x 2K
+默认 B x 25 x 10]
+        F2[按每个 ztd/zwd token 沿时间窗实例归一化
+减均值 除标准差]
+        F3[DataEmbedding_inverted
+先得到2K个 ztd/zwd token
+再追加 n_time_features 个 encoder时间 token
+输出默认: B x 14 x d_model]
+        F4[空间静态编码 MLP
+x_geo: B x K x 24 -> B x K x d_model
+每邻站复制到它的 ztd/zwd 两个token]
+        F5[GNSS ERA5编码 MLP
+x_era5_enc: B x K x 50 -> B x K x d_model
+每邻站复制到它的 ztd/zwd 两个token]
+        F6[仅前2K个 token 相加
+ztd/zwd token嵌入 + 空间静态嵌入 + GNSS ERA5嵌入
+后面的时间 token 不加邻站条件]
+        F7[Transformer Encoder
+e_layers=2 多头自注意力
+默认在14个 token: 10个GNSS变量 + 4个时间token 间建模]
+        F8[投影层并切片
+d_model -> pred_len=1: 先得到 B x 1 x 14
+仅保留前2K个GNSS token: B x 1 x 10]
+        F9[输出头特征拼接
+A: 2K个 ztd/zwd token投影 默认10
+B: x_tgt 目标高度+静态 默认21
+C: x_era5_tgt 目标站ERA5 默认50
+D: y_mark decoder时间特征 默认4
+合计默认85维]
+        F10[output_layer Linear
+85 -> 6
+输出 normalized NCEP: B x 1 x 6]
+    end
+
+    subgraph S6[七 训练 验证 测试]
+        G1[训练损失
+MSE(pred_norm y_norm)]
+        G2[每epoch验证
+按最小 val loss 保存 checkpoint]
+        G3[测试推理
+加载最佳 checkpoint]
+        G4[反归一化
+pred = pred_norm * ys + ym]
+        G5[test_predictions.npz
+preds trues preds_norm trues_norm variables
+station_ids time_utc time_ncep_index]
+        G6[test_metrics.json + 图表
+总体和各变量 MAE MSE RMSE]
+    end
+
+    A1 --> B1
+    A2 --> B1
+    A3 --> B1
+    B1 --> B2 --> B3
+    A4 --> B4
+    A5 --> B5 --> B6
+    B3 --> B6
+    B2 --> C1
+    B4 --> C2
+    C1 --> C2 --> C3 --> C4
+    B5 --> B7
+    C4 --> D1 --> D2
+    D1 --> D4 --> D5
+    D2 --> D3
+    B6 --> D6 --> D7
+    D6 --> D8
+    D4 --> D7
+    B7 --> D9
+    C4 --> D10
+    D2 --> E1
+    D7 --> E1
+    E1 --> E2 --> E4
+    E1 --> E3 --> E4
+    D2 --> F1 --> F2 --> F3
+    D5 --> F4 --> F6
+    D7 --> F5 --> F6
+    F3 --> F6 --> F7 --> F8 --> F9 --> F10
+    D8 --> F9
+    D3 --> F9
+    D9 --> G1
+    F10 --> G1 --> G2 --> G3 --> G4 --> G5 --> G6
+    D10 --> G5

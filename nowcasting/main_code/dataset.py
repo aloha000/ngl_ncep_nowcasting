@@ -4,12 +4,12 @@ import argparse
 
 import numpy as np
 import pandas as pd
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 import zarr
 
 from .config import parse_utc
-from .constants import NCEP_VARS
+from .constants import ERA5_BACKGROUND_CHANNELS, NCEP_VARS
 from .geometry import _enu
 from utils.timefeatures import time_features
 
@@ -21,6 +21,8 @@ class NowcastData:
         self.args = args
         self.ngl = zarr.open(args.ngl_zarr, mode="r")
         self.ncep = zarr.open(args.ncep_zarr, mode="r")
+        self.use_era5 = bool(args.use_era5)
+        self.era5 = zarr.open(args.era5_zarr, mode="r") if self.use_era5 else None
         self.ngl_full = None
         self.ncep_full = None
         if args.load_full_arrays:
@@ -49,6 +51,37 @@ class NowcastData:
             self.ngl_time = self.ngl_time.tz_localize("UTC")
         if self.ncep_time.tz is None:
             self.ncep_time = self.ncep_time.tz_localize("UTC")
+        if self.use_era5:
+            self.era5_time = pd.DatetimeIndex(pd.to_datetime(np.asarray(self.era5["time"][:])))
+            if self.era5_time.tz is None:
+                self.era5_time = self.era5_time.tz_localize("UTC")
+            # Samples are indexed on the NCEP hourly axis. Keep the matching ERA5 row explicitly.
+            self.era5_ncep_idx = self.era5_time.get_indexer(self.ncep_time)
+            self.era5_available = self.era5_ncep_idx >= 0
+            if not self.era5_available.all():
+                missing = int((~self.era5_available).sum())
+                print(f"[data] ERA5 missing {missing} NCEP timestamps; those samples are excluded", flush=True)
+            era5_channels = np.asarray(self.era5["channel"][:]).astype(str)
+            era5_lookup = {name: i for i, name in enumerate(era5_channels)}
+            missing_channels = [name for name in ERA5_BACKGROUND_CHANNELS if name not in era5_lookup]
+            if missing_channels:
+                raise SystemExit(f"ERA5 background channels missing: {missing_channels}")
+            self.era5_channel_idx = np.asarray([era5_lookup[name] for name in ERA5_BACKGROUND_CHANNELS], dtype=np.int64)
+            self.era5_dim = len(ERA5_BACKGROUND_CHANNELS)
+            self.era5_lat = np.asarray(self.era5["lat"][:], dtype=np.float32)
+            self.era5_lon = np.asarray(self.era5["lon"][:], dtype=np.float32)
+            self.era5_z = self.era5["z"]
+            self.era5_time_chunk = int(self.era5_z.chunks[0])
+            self.era5_cache: dict[int, np.ndarray] = {}
+            self.era5_cache_order: list[int] = []
+            self.era5_cache_hours = int(args.era5_cache_hours)
+            self.era5_cache_chunks = max(1, self.era5_cache_hours // self.era5_time_chunk)
+            print(f"[data] ERA5 background channels={self.era5_dim} "
+                  f"chunk_hours={self.era5_time_chunk} cache_chunks={self.era5_cache_chunks}", flush=True)
+        else:
+            self.era5_available = np.ones(len(self.ncep_time), dtype=bool)
+            self.era5_dim = 0
+            print("[data] ERA5 disabled; using GNSS-only inputs and ordinary random batches", flush=True)
         # Precompute time marks once for the whole NGL time axis (optional).
         if args.time_encoding == "sincos":
             # Four calendar cycles, each encoded as a (sin, cos) pair:
@@ -130,6 +163,8 @@ class NowcastData:
         self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo + static_dim) pre-normalization
         self.target_h_raw: list[float] = []  # target station height (m) per selected station
         self.target_static_raw: list[np.ndarray] = []  # const.nc static features per selected target
+        self.station_era5_grid: list[np.ndarray] = []  # bilinear ERA5 weights per GNSS neighbor
+        self.target_era5_grid: list[np.ndarray] = []   # bilinear ERA5 weights per target
 
         for si, sid in enumerate(selected):
             if si % 10 == 0:
@@ -159,6 +194,15 @@ class NowcastData:
                 row[j, :args.n_geo] = geo_values
                 row[j, args.n_geo:] = g_static.get(gid, np.zeros(self.static_dim, dtype=np.float32))
             self.station_geo_raw.append(row)
+            if self.use_era5:
+                # Store bilinear ERA5 weights once; dynamic sampling below only reads the target hour.
+                neighbor_grid = np.zeros((args.max_neighbors, 4, 3), dtype=np.float32)
+                for j, gid in enumerate(neighbor_ids[sid][: args.max_neighbors]):
+                    g_info = g_geo.get(gid)
+                    if g_info is not None:
+                        neighbor_grid[j] = self._era5_bilinear_grid(g_info[0], g_info[1])
+                self.station_era5_grid.append(neighbor_grid)
+                self.target_era5_grid.append(self._era5_bilinear_grid(t_info[0], t_info[1]) if t_info is not None else np.zeros((4, 3), dtype=np.float32))
             self.target_h_raw.append(t_info[2] if t_info is not None else np.nan)
             self.target_static_raw.append(t_static.get(sid, np.zeros(self.static_dim, dtype=np.float32)))
             if self.ngl_full is not None:
@@ -214,10 +258,56 @@ class NowcastData:
 
         self.samples: dict[str, list[np.ndarray]] = {f: [] for f in self.split_ranges}
         self._build_sample_index()
+        self.input_mean, self.input_std, self.input_count = self._train_input_scaler()
         self.ym, self.ys = self._train_scaler()
         self._target_h_scaler()
         for flag in self.samples:
             print(f"[{flag}] stations={len(self.samples[flag])} samples={sum(len(s) for s in self.samples[flag])}", flush=True)
+
+    def _era5_bilinear_grid(self, lat: float, lon: float) -> np.ndarray:
+        """Return four ERA5 grid corners as (lat_index, lon_index, weight)."""
+        lon360 = lon % 360.0
+        lat_asc = self.era5_lat[::-1]
+        iy1_asc = int(np.clip(np.searchsorted(lat_asc, lat), 1, len(lat_asc) - 1))
+        ix1 = int(np.clip(np.searchsorted(self.era5_lon, lon360), 1, len(self.era5_lon) - 1))
+        iy0_asc = iy1_asc - 1
+        ix0 = ix1 - 1
+        lat0, lat1 = lat_asc[iy0_asc], lat_asc[iy1_asc]
+        lon0, lon1 = self.era5_lon[ix0], self.era5_lon[ix1]
+        fy = float(np.clip((lat - lat0) / (lat1 - lat0), 0.0, 1.0))
+        fx = float(np.clip((lon360 - lon0) / (lon1 - lon0), 0.0, 1.0))
+        # ERA5 latitude is stored north-to-south, hence reverse the ascending indices.
+        iy0 = len(self.era5_lat) - 1 - iy0_asc
+        iy1 = len(self.era5_lat) - 1 - iy1_asc
+        return np.asarray([
+            (iy0, ix0, (1.0 - fy) * (1.0 - fx)),
+            (iy0, ix1, (1.0 - fy) * fx),
+            (iy1, ix0, fy * (1.0 - fx)),
+            (iy1, ix1, fy * fx),
+        ], dtype=np.float32)
+
+    def _era5_at_grid(self, ncep_t: int, grid: np.ndarray) -> np.ndarray:
+        """Sample one NCEP target hour at station-specific bilinear corners.
+
+        grid has shape (stations, 4, 3); output is (stations, era5_dim).
+        """
+        era5_t = int(self.era5_ncep_idx[ncep_t])
+        chunk_id = era5_t // self.era5_time_chunk
+        fields = self.era5_cache.get(chunk_id)
+        if fields is None:
+            t0 = chunk_id * self.era5_time_chunk
+            t1 = min(t0 + self.era5_time_chunk, self.era5_z.shape[0])
+            fields = np.asarray(self.era5_z[t0:t1, self.era5_channel_idx, :, :], dtype=np.float32)
+            if self.era5_cache_hours > 0:
+                self.era5_cache[chunk_id] = fields
+                self.era5_cache_order.append(chunk_id)
+                while len(self.era5_cache_order) > self.era5_cache_chunks:
+                    self.era5_cache.pop(self.era5_cache_order.pop(0), None)
+        fields_t = fields[era5_t - chunk_id * self.era5_time_chunk]
+        iy = grid[:, :, 0].astype(np.intp)
+        ix = grid[:, :, 1].astype(np.intp)
+        weight = grid[:, :, 2].astype(np.float32)
+        return (fields_t[:, iy, ix] * weight[None, :, :]).sum(axis=2).T.astype(np.float32)
 
     def _build_sample_index(self): 
         args = self.args
@@ -246,11 +336,54 @@ class NowcastData:
             tgt_ok = np.isfinite(self.target[i]).all(axis=1)  # (T_ncep,)
             for flag in self.samples:
                 idx = self.split_idx[flag]
-                keep = idx[(n_valid[idx] >= args.min_valid_neighbors) & tgt_ok[idx]]
+                keep = idx[(n_valid[idx] >= args.min_valid_neighbors) & tgt_ok[idx] & self.era5_available[idx]]
                 stride = {"train": args.hour_stride, "val": args.val_stride, "test": args.test_stride}[flag]
                 self.samples[flag].append(keep[::stride])
             if (i + 1) % 100 == 0 or i + 1 == len(self.station_ngl):
                 print(f"[data] sample-index {i + 1}/{len(self.station_ngl)}", flush=True)
+
+    def _train_input_scaler(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute per-token ZTD/ZWD statistics from all valid training windows.
+
+        The statistics match the actual model inputs: a neighbour contributes
+        only when both of its fields are finite throughout an input window.
+        They are then reused unchanged by train, validation and test samples.
+        """
+        n_chan = 2 * self.args.max_neighbors
+        sums = np.zeros(n_chan, dtype=np.float64)
+        sqs = np.zeros(n_chan, dtype=np.float64)
+        count = np.zeros(n_chan, dtype=np.int64)
+        offsets = np.arange(self.window_steps, dtype=np.int64)
+        for station_pos, times in enumerate(self.samples["train"]):
+            if not len(times):
+                continue
+            ztd, zwd = self.station_ngl[station_pos]
+            starts = (times * self.ngl_steps_per_hour + self.ngl_offset
+                      - (self.window_steps - 1))
+            rows = starts[:, None] + offsets[None, :]
+            for neighbor in range(ztd.shape[1]):
+                z = ztd[rows, neighbor]
+                w = zwd[rows, neighbor]
+                valid = np.isfinite(z).all(axis=1) & np.isfinite(w).all(axis=1)
+                if not valid.any():
+                    continue
+                for channel, values in ((2 * neighbor, z[valid]), (2 * neighbor + 1, w[valid])):
+                    values = values.astype(np.float64, copy=False).ravel()
+                    sums[channel] += values.sum()
+                    sqs[channel] += np.square(values).sum()
+                    count[channel] += values.size
+        missing = count == 0
+        if missing.any():
+            # Padded/unavailable neighbour ranks are always zero in make_sample.
+            sums[missing] = 0.0
+            count[missing] = 1
+        mean = sums / count
+        var = sqs / count - mean * mean
+        std = np.sqrt(np.clip(var, 1e-12, None))
+        std[missing] = 1.0
+        print(f"[data] input global scaler count={count.tolist()} "
+              f"mean={mean.tolist()} std={std.tolist()}", flush=True)
+        return mean.astype(np.float32), std.astype(np.float32), count
 
     def _train_scaler(self) -> tuple[np.ndarray, np.ndarray]:
         if not self.args.target_scale:
@@ -322,13 +455,16 @@ class NowcastData:
     def save_scalers(self, out_dir: Path) -> None:
         """Save normalization statistics needed for inference on new points.
 
-        geo_mean/geo_std (per-neighbor spatial encoding), target_h_mean/std
-        (target-station height feature) and ym/ys (target z-scoring) are all
-        computed from the training split; grid inference must reuse exactly
-        these values.
+        input_mean/input_std (per ZTD/ZWD token), geo_mean/geo_std
+        (per-neighbor spatial encoding), target_h_mean/std (target-station
+        height feature) and ym/ys (target z-scoring) are all computed from
+        the training split. Validation, test, and inference must reuse them.
         """
         np.savez(
             out_dir / "scalers.npz",
+            input_mean=self.input_mean,
+            input_std=self.input_std,
+            input_count=self.input_count,
             geo_mean=self.geo_mean,
             geo_std=self.geo_std,
             target_h_mean=np.float64(self.target_h_mean),
@@ -354,11 +490,13 @@ class NowcastData:
         g1 = g0 + self.window_steps                # exclusive
         wz = np.isfinite(ztd[g0:g1]) & np.isfinite(zwd[g0:g1])  # (window, k)
         valid = wz.all(axis=0)
+        # Dynamic GNSS channels remain the only input variates. Static/ERA5
+        # values are attached to each corresponding token embedding in Model.
         x = np.zeros((self.window_steps, n_chan), dtype=np.float32)
         for j in range(k):
             if valid[j]:
-                x[:, 2 * j] = ztd[g0:g1, j]
-                x[:, 2 * j + 1] = zwd[g0:g1, j]
+                x[:, 2 * j] = (ztd[g0:g1, j] - self.input_mean[2 * j]) / self.input_std[2 * j]
+                x[:, 2 * j + 1] = (zwd[g0:g1, j] - self.input_mean[2 * j + 1]) / self.input_std[2 * j + 1]
         y = self.target[station_pos][t].astype(np.float32)
         y = np.nan_to_num((y - self.ym) / self.ys, nan=0.0).reshape(1, len(NCEP_VARS))
         if self.time_mark is not None:
@@ -367,12 +505,57 @@ class NowcastData:
         else:
             mark = np.zeros((self.window_steps, 0), dtype=np.float32)
             y_mark = np.zeros((1, 0), dtype=np.float32)
-        # Positional/static encoding is still gated by per-sample validity.
+        # Per-neighbour encoder features are gated by input validity. They are
+        # concatenated onto each neighbour's ZTD/ZWD embedding in Model.
         v = np.zeros(self.args.max_neighbors, dtype=np.float32)
         v[:k] = valid.astype(np.float32)
         x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo_total) float32
+        # ERA5 is already standardized in its source Zarr and is sampled only
+        # at target hour T.  Repeating an hourly field over the 5-minute window
+        # would be removed by the model's per-token instance normalization.
+        # Instead, GNSS fields condition their corresponding encoder tokens and
+        # target fields are concatenated with target static/time output features.
+        if self.use_era5:
+            x_era5_enc = self._era5_at_grid(t, self.station_era5_grid[station_pos]) * v[:, None]
+            x_era5_tgt = self._era5_at_grid(t, self.target_era5_grid[station_pos][None, :, :])[0]
+        else:
+            x_era5_enc = np.zeros((self.args.max_neighbors, 0), dtype=np.float32)
+            x_era5_tgt = np.zeros(0, dtype=np.float32)
         x_tgt = self.target_h_arr[station_pos]  # z-scored target-level output-head features
-        return x, y, mark, y_mark, x_geo, x_tgt
+        return x, y, mark, y_mark, x_geo, x_tgt, x_era5_enc, x_era5_tgt
+
+
+class Era5ChunkBatchSampler(Sampler[list[int]]):
+    """Batch samples by physical ERA5 time chunk to maximize cache reuse.
+
+    The training order is randomized at the six-hour chunk level.  Samples
+    inside a chunk remain contiguous, so a single worker decompresses each
+    ERA5 Zarr slab once instead of once per random sample.
+    """
+
+    def __init__(self, dataset: "GNSSNowcastDataset", batch_size: int, shuffle: bool):
+        self.batch_size = int(batch_size)
+        self.shuffle = shuffle
+        data = dataset.data
+        chunk_ids = np.empty(len(dataset), dtype=np.int32)
+        for station_pos, times in enumerate(dataset.samples):
+            start, stop = dataset.offsets[station_pos], dataset.offsets[station_pos + 1]
+            chunk_ids[start:stop] = data.era5_ncep_idx[times] // data.era5_time_chunk
+        order = np.argsort(chunk_ids, kind="stable")
+        boundaries = np.flatnonzero(np.diff(chunk_ids[order])) + 1
+        self.groups = np.split(order, boundaries)
+
+    def __iter__(self):
+        group_order = np.random.permutation(len(self.groups)) if self.shuffle else np.arange(len(self.groups))
+        for group_idx in group_order:
+            indices = self.groups[group_idx]
+            if self.shuffle:
+                indices = np.random.permutation(indices)
+            for start in range(0, len(indices), self.batch_size):
+                yield indices[start:start + self.batch_size].tolist()
+
+    def __len__(self) -> int:
+        return sum((len(group) + self.batch_size - 1) // self.batch_size for group in self.groups)
 
 
 class GNSSNowcastDataset(Dataset):
@@ -389,7 +572,9 @@ class GNSSNowcastDataset(Dataset):
     def __getitem__(self, index: int):
         i = int(np.searchsorted(self.offsets, index + 1, side="left") - 1)
         t = int(self.samples[i][index - int(self.offsets[i])])
-        return self.data.make_sample(i, t)
+        # Preserve the target station and NCEP time index for test-time maps;
+        # train/validation loops receive and discard these two metadata fields.
+        return (*self.data.make_sample(i, t), self.data.station_ids[i], t)
 
 def make_loader(data: NowcastData, flag: str, args: argparse.Namespace, shuffle: bool):
     ds = GNSSNowcastDataset(data, flag)
@@ -400,6 +585,14 @@ def make_loader(data: NowcastData, flag: str, args: argparse.Namespace, shuffle:
             f"min_valid_neighbors={args.min_valid_neighbors}). "
             "Try --set station_offset=... or increase --set stations=..."
         )
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle,
-                    num_workers=args.num_workers, pin_memory=True, drop_last=False)
+    # Chunked batches make the ERA5 six-hour slab cache effective.  A single
+    # worker is intentional: multiple workers would each decompress the same
+    # slab and reintroduce the HDD bottleneck.
+    if data.use_era5:
+        sampler = Era5ChunkBatchSampler(ds, args.batch_size, shuffle)
+        dl = DataLoader(ds, batch_sampler=sampler, num_workers=args.num_workers,
+                        pin_memory=True)
+    else:
+        dl = DataLoader(ds, batch_size=args.batch_size, shuffle=shuffle,
+                        num_workers=args.num_workers, pin_memory=True, drop_last=False)
     return ds, dl

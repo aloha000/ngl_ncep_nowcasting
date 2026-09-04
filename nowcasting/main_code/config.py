@@ -22,7 +22,7 @@ def parse_utc(value: str):
 # the script holds no value defaults. Missing/unknown keys are reported at startup.
 REQUIRED_KEYS = {
     # data
-    "ngl_zarr", "ncep_zarr", "neighbors_parquet", "target_stations_parquet",
+    "ngl_zarr", "ncep_zarr", "use_era5", "era5_zarr", "neighbors_parquet", "target_stations_parquet",
     "gnss_stations_parquet", "station_static_npz", "ngl_step_minutes",
     # temporal splits
     "train_start", "train_end", "val_start", "val_end", "test_start", "test_end",
@@ -31,7 +31,7 @@ REQUIRED_KEYS = {
     "hour_stride", "val_stride", "test_stride", "load_full_arrays", "load_full_ncep",
     # model
     "window_hours", "pred_len", "time_encoding", "time_freq", "spatial_enc", "n_geo", "spatial_mlp_hidden",
-    "target_h_feat",
+    "target_h_feat", "era5_cache_hours",
     "d_model", "n_heads", "e_layers", "d_ff", "dropout", "activation",
     # training
     "epochs", "batch_size", "learning_rate", "patience", "num_workers", "seed",
@@ -40,7 +40,7 @@ REQUIRED_KEYS = {
     "device", "model_id", "out_root",
 }
 
-PATH_KEYS = ("ngl_zarr", "ncep_zarr", "neighbors_parquet",
+PATH_KEYS = ("ngl_zarr", "ncep_zarr", "era5_zarr", "neighbors_parquet",
              "target_stations_parquet", "gnss_stations_parquet", "station_static_npz", "out_root")
 
 
