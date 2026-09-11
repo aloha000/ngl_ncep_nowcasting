@@ -28,10 +28,11 @@ REQUIRED_KEYS = {
     "train_start", "train_end", "val_start", "val_end", "test_start", "test_end",
     # station/time sampling
     "stations", "station_offset", "max_neighbors", "min_valid_neighbors",
+    "filter_max_neighbors", "filter_min_valid_neighbors",
     "hour_stride", "val_stride", "test_stride", "load_full_arrays", "load_full_ncep",
     # model
     "window_hours", "pred_len", "time_encoding", "time_freq", "spatial_enc", "n_geo", "spatial_mlp_hidden",
-    "target_h_feat", "era5_cache_hours",
+    "target_h_feat", "era5_cache_hours", "zero_ztd",
     "d_model", "n_heads", "e_layers", "d_ff", "dropout", "activation",
     # training
     "epochs", "batch_size", "learning_rate", "patience", "num_workers", "seed",

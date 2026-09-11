@@ -1167,3 +1167,4 @@ loaded best checkpoint from epoch 9 (val_loss=0.709408)
   "n_samples": 1259729
 }
 outputs saved under /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/nowcasting/outputs/model_id=all_stations_v1_5min_20epoch_s1915_off0_h6_dm128_el2_nh4_df512_sp
+--set expects KEY=VALUE, got: 'filter_m'

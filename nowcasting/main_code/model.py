@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .constants import ERA5_BACKGROUND_CHANNELS, NCEP_VARS
+from .constants import ERA5_BACKGROUND_CHANNELS, NCEP_VARS, NGL_VARS
 from models.iTransformer import Model
 
 
@@ -11,9 +11,10 @@ def make_model_config(args: argparse.Namespace) -> argparse.Namespace:
     cfg.task_name = "long_term_forecast"
     cfg.seq_len = args.seq_len
     cfg.pred_len = args.pred_len
-    # ZTD/ZWD remain the only input tokens. Per-neighbour static and ERA5
+    cfg.n_geo = int(args.n_geo)
+    # ZTD is the only input token. Per-neighbour static and ERA5
     # features are concatenated onto their token embeddings before the encoder.
-    cfg.enc_in = 2 * args.max_neighbors
+    cfg.enc_in = len(NGL_VARS) * args.max_neighbors
     cfg.spatial_feature_dim = int(getattr(args, "n_geo_total", args.n_geo)) if args.spatial_enc else 0
     cfg.era5_dim = len(ERA5_BACKGROUND_CHANNELS) if args.use_era5 else 0
     cfg.encoder_d_model = args.d_model + cfg.spatial_feature_dim + cfg.era5_dim

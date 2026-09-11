@@ -4,3 +4,8 @@ surf_ncep/
 dataset/
 logs/
 outputs/
+da_ngl/dataset/
+da_ngl/logs
+da_ngl/main_code/work_dir/plots
+da_ngl/main_code/work_dir/model
+da_ngl/main_code/work_dir/logs

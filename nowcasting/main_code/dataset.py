@@ -9,8 +9,9 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 import zarr
 
 from .config import parse_utc
-from .constants import ERA5_BACKGROUND_CHANNELS, NCEP_VARS
+from .constants import ERA5_BACKGROUND_CHANNELS, NCEP_SOURCE_VARS, NCEP_VARS, NGL_VARS
 from .geometry import _enu
+from .humidity import specific_humidity_from_t_rh_p
 from utils.timefeatures import time_features
 
 
@@ -21,20 +22,23 @@ class NowcastData:
         self.args = args
         self.ngl = zarr.open(args.ngl_zarr, mode="r")
         self.ncep = zarr.open(args.ncep_zarr, mode="r")
+        missing_ncep = [name for name in NCEP_SOURCE_VARS if name not in self.ncep]
+        if missing_ncep:
+            raise SystemExit(f"NCEP store is missing required source fields: {missing_ncep}")
         self.use_era5 = bool(args.use_era5)
         self.era5 = zarr.open(args.era5_zarr, mode="r") if self.use_era5 else None
         self.ngl_full = None
         self.ncep_full = None
         if args.load_full_arrays:
-            print("[data] loading full NGL ZTD/ZWD arrays into RAM (slow on HDD) ...", flush=True)
+            print("[data] loading full NGL input arrays into RAM (slow on HDD) ...", flush=True)
             self.ngl_full = {
-                "ztd": np.asarray(self.ngl["ztd"][:]),
-                "zwd": np.asarray(self.ngl["zwd"][:]),
+                name: np.asarray(self.ngl[name][:])
+                for name in NGL_VARS
             }
         if args.load_full_ncep:
             print("[data] loading full NCEP arrays row-major ...", flush=True)
             self.ncep_full = {}
-            for v in NCEP_VARS:
+            for v in NCEP_SOURCE_VARS:
                 arr = self.ncep[v]
                 n_t, n_s = arr.shape
                 out = np.empty((n_t, n_s), dtype=np.float32)
@@ -116,9 +120,14 @@ class NowcastData:
         self.ngl_col = {str(s): i for i, s in enumerate(np.asarray(self.ngl["station"][:]))}
         self.ncep_col = {str(s): i for i, s in enumerate(np.asarray(self.ncep["station"][:]))}
 
-        # per-target ordered neighbor list (rank 1..max_neighbors)
+        filter_max_neighbors = int(getattr(args, "filter_max_neighbors", args.max_neighbors))
+        filter_min_valid_neighbors = int(getattr(args, "filter_min_valid_neighbors", args.min_valid_neighbors))
+        args.filter_max_neighbors = filter_max_neighbors
+        args.filter_min_valid_neighbors = filter_min_valid_neighbors
+
+        # per-target ordered neighbor list (rank 1..filter_max_neighbors)
         nb = pd.read_parquet(args.neighbors_parquet)
-        nb = nb[nb["rank"] <= args.max_neighbors].sort_values(["target_station_id", "rank"])   # 从邻近站表里筛选出前 N 个邻近站，并按（目标站, 排名）排好序
+        nb = nb[nb["rank"] <= filter_max_neighbors].sort_values(["target_station_id", "rank"])
         neighbor_ids = nb.groupby("target_station_id")["gnss_station_id"].apply(list).to_dict()
 
         # Station geometry/static features for the positional encoding: per (target, neighbor)
@@ -148,7 +157,7 @@ class NowcastData:
 
         candidates = sorted(
             sid for sid, ids in neighbor_ids.items()
-            if len(ids) >= args.min_valid_neighbors
+            if len(ids) >= filter_min_valid_neighbors
         )
         # stations <= 0 (or None) means "use all usable stations" from the offset onward.
         if args.stations is None or args.stations <= 0:
@@ -157,7 +166,7 @@ class NowcastData:
             selected = candidates[args.station_offset: args.station_offset + args.stations]
 
         self.station_ids: list[str] = []
-        self.station_ngl: list[tuple[np.ndarray, np.ndarray]] = []  # (ztd (T_ngl,k), zwd)
+        self.station_ngl: list[np.ndarray] = []  # ztd (T_ngl, max_neighbors)
         self.station_ncep_col: list[int] = []
         self.target: list[np.ndarray] = []  # (T_ncep, n_vars) float32
         self.station_geo_raw: list[np.ndarray] = []  # (max_k, n_geo + static_dim) pre-normalization
@@ -172,7 +181,7 @@ class NowcastData:
             ncep_i = self.ncep_col.get(sid)
             if ncep_i is None:
                 continue
-            cols = [self.ngl_col[g] for g in neighbor_ids[sid][: args.max_neighbors]]
+            cols = [self.ngl_col[g] for g in neighbor_ids[sid][: filter_max_neighbors]]
             if any(c is None for c in cols) or not cols:
                 continue
             row = np.zeros((args.max_neighbors, args.n_geo_total), dtype=np.float32)
@@ -207,16 +216,18 @@ class NowcastData:
             self.target_static_raw.append(t_static.get(sid, np.zeros(self.static_dim, dtype=np.float32)))
             if self.ngl_full is not None:
                 ztd = self.ngl_full["ztd"][:, cols].astype(np.float32, copy=False)
-                zwd = self.ngl_full["zwd"][:, cols].astype(np.float32, copy=False)
             else:
                 ztd = np.stack([self.ngl["ztd"][:, c] for c in cols], axis=1).astype(np.float32)
-                zwd = np.stack([self.ngl["zwd"][:, c] for c in cols], axis=1).astype(np.float32)
             if self.ncep_full is not None:
-                tgt = np.stack([self.ncep_full[v][:, ncep_i] for v in NCEP_VARS], axis=1).astype(np.float32)
+                source = [self.ncep_full[v][:, ncep_i] for v in NCEP_SOURCE_VARS]
             else:
-                tgt = np.stack([self.ncep[v][:, ncep_i] for v in NCEP_VARS], axis=1).astype(np.float32)
+                source = [self.ncep[v][:, ncep_i] for v in NCEP_SOURCE_VARS]
+            p, slp, t2m, r2m, u10, v10 = source
+            # Observation pressure is stored in hPa; the IFS formulation uses Pa.
+            q2m = specific_humidity_from_t_rh_p(t2m, r2m, p * 100.0)
+            tgt = np.stack([p, slp, t2m, q2m, u10, v10], axis=1).astype(np.float32)
             self.station_ids.append(sid)
-            self.station_ngl.append((ztd, zwd))
+            self.station_ngl.append(ztd)
             self.station_ncep_col.append(ncep_i)
             self.target.append(tgt)
 
@@ -258,6 +269,12 @@ class NowcastData:
 
         self.samples: dict[str, list[np.ndarray]] = {f: [] for f in self.split_ranges}
         self._build_sample_index()
+        self.station_ngl = [ztd[:, : args.max_neighbors] for ztd in self.station_ngl]
+        if getattr(args, "zero_ztd", False):
+            # Build sample indices with the real ZTD first so the ablation uses
+            # exactly the same samples as the non-zeroed run, then replace the
+            # input values with zeros.
+            self.station_ngl = [np.zeros_like(ztd) for ztd in self.station_ngl]
         self.input_mean, self.input_std, self.input_count = self._train_input_scaler()
         self.ym, self.ys = self._train_scaler()
         self._target_h_scaler()
@@ -321,8 +338,9 @@ class NowcastData:
             + self.ngl_offset
             - (win_slide - 1)
         )
-        for i, (ztd, zwd) in enumerate(self.station_ngl):
-            good = np.isfinite(ztd) & np.isfinite(zwd)  # (T_ngl, k)
+        filter_min = int(getattr(args, "filter_min_valid_neighbors", args.min_valid_neighbors))
+        for i, ztd in enumerate(self.station_ngl):
+            good = np.isfinite(ztd)  # (T_ngl, filter_max_neighbors)
             # Window fully-finite count via cumulative sums (equivalent to
             # sliding_window_view(...).all(), but much faster at 5-minute scale).
             cum = np.zeros((good.shape[0] + 1, good.shape[1]), dtype=np.int64)
@@ -336,20 +354,20 @@ class NowcastData:
             tgt_ok = np.isfinite(self.target[i]).all(axis=1)  # (T_ncep,)
             for flag in self.samples:
                 idx = self.split_idx[flag]
-                keep = idx[(n_valid[idx] >= args.min_valid_neighbors) & tgt_ok[idx] & self.era5_available[idx]]
+                keep = idx[(n_valid[idx] >= filter_min) & tgt_ok[idx] & self.era5_available[idx]]
                 stride = {"train": args.hour_stride, "val": args.val_stride, "test": args.test_stride}[flag]
                 self.samples[flag].append(keep[::stride])
             if (i + 1) % 100 == 0 or i + 1 == len(self.station_ngl):
                 print(f"[data] sample-index {i + 1}/{len(self.station_ngl)}", flush=True)
 
     def _train_input_scaler(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute per-token ZTD/ZWD statistics from all valid training windows.
+        """Compute per-token ZTD statistics from all valid training windows.
 
         The statistics match the actual model inputs: a neighbour contributes
-        only when both of its fields are finite throughout an input window.
+        only when its ZTD is finite throughout an input window.
         They are then reused unchanged by train, validation and test samples.
         """
-        n_chan = 2 * self.args.max_neighbors
+        n_chan = len(NGL_VARS) * self.args.max_neighbors
         sums = np.zeros(n_chan, dtype=np.float64)
         sqs = np.zeros(n_chan, dtype=np.float64)
         count = np.zeros(n_chan, dtype=np.int64)
@@ -357,21 +375,20 @@ class NowcastData:
         for station_pos, times in enumerate(self.samples["train"]):
             if not len(times):
                 continue
-            ztd, zwd = self.station_ngl[station_pos]
+            ztd = self.station_ngl[station_pos]
             starts = (times * self.ngl_steps_per_hour + self.ngl_offset
                       - (self.window_steps - 1))
             rows = starts[:, None] + offsets[None, :]
             for neighbor in range(ztd.shape[1]):
-                z = ztd[rows, neighbor]
-                w = zwd[rows, neighbor]
-                valid = np.isfinite(z).all(axis=1) & np.isfinite(w).all(axis=1)
+                values = ztd[rows, neighbor]
+                valid = np.isfinite(values).all(axis=1)
                 if not valid.any():
                     continue
-                for channel, values in ((2 * neighbor, z[valid]), (2 * neighbor + 1, w[valid])):
-                    values = values.astype(np.float64, copy=False).ravel()
-                    sums[channel] += values.sum()
-                    sqs[channel] += np.square(values).sum()
-                    count[channel] += values.size
+                channel = len(NGL_VARS) * neighbor
+                values = values[valid].astype(np.float64, copy=False).ravel()
+                sums[channel] += values.sum()
+                sqs[channel] += np.square(values).sum()
+                count[channel] += values.size
         missing = count == 0
         if missing.any():
             # Padded/unavailable neighbour ranks are always zero in make_sample.
@@ -455,7 +472,7 @@ class NowcastData:
     def save_scalers(self, out_dir: Path) -> None:
         """Save normalization statistics needed for inference on new points.
 
-        input_mean/input_std (per ZTD/ZWD token), geo_mean/geo_std
+        input_mean/input_std (per ZTD token), geo_mean/geo_std
         (per-neighbor spatial encoding), target_h_mean/std (target-station
         height feature) and ym/ys (target z-scoring) are all computed from
         the training split. Validation, test, and inference must reuse them.
@@ -482,21 +499,20 @@ class NowcastData:
         print(f"[data] scalers saved to {out_dir / 'scalers.npz'}", flush=True)
 
     def make_sample(self, station_pos: int, t: int):
-        ztd, zwd = self.station_ngl[station_pos]
+        ztd = self.station_ngl[station_pos]
         k = ztd.shape[1]
         max_k = self.args.max_neighbors
-        n_chan = 2 * max_k
+        n_chan = len(NGL_VARS) * max_k
         g0 = t * self.ngl_steps_per_hour + self.ngl_offset - (self.window_steps - 1)
         g1 = g0 + self.window_steps                # exclusive
-        wz = np.isfinite(ztd[g0:g1]) & np.isfinite(zwd[g0:g1])  # (window, k)
-        valid = wz.all(axis=0)
+        valid_window = np.isfinite(ztd[g0:g1])  # (window, k)
+        valid = valid_window.all(axis=0)
         # Dynamic GNSS channels remain the only input variates. Static/ERA5
         # values are attached to each corresponding token embedding in Model.
         x = np.zeros((self.window_steps, n_chan), dtype=np.float32)
         for j in range(k):
             if valid[j]:
-                x[:, 2 * j] = (ztd[g0:g1, j] - self.input_mean[2 * j]) / self.input_std[2 * j]
-                x[:, 2 * j + 1] = (zwd[g0:g1, j] - self.input_mean[2 * j + 1]) / self.input_std[2 * j + 1]
+                x[:, j] = (ztd[g0:g1, j] - self.input_mean[j]) / self.input_std[j]
         y = self.target[station_pos][t].astype(np.float32)
         y = np.nan_to_num((y - self.ym) / self.ys, nan=0.0).reshape(1, len(NCEP_VARS))
         if self.time_mark is not None:
@@ -506,7 +522,7 @@ class NowcastData:
             mark = np.zeros((self.window_steps, 0), dtype=np.float32)
             y_mark = np.zeros((1, 0), dtype=np.float32)
         # Per-neighbour encoder features are gated by input validity. They are
-        # concatenated onto each neighbour's ZTD/ZWD embedding in Model.
+        # concatenated onto each neighbour's ZTD embedding in Model.
         v = np.zeros(self.args.max_neighbors, dtype=np.float32)
         v[:k] = valid.astype(np.float32)
         x_geo = self.station_geo_arr[station_pos] * v[:, None]  # (max_k, n_geo_total) float32

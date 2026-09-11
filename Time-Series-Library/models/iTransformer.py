@@ -17,7 +17,7 @@ class Model(nn.Module):
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
-        # Nowcasting-style tasks may map input variates (e.g. NGL ZTD/ZWD) to a
+        # Nowcasting-style tasks may map input variates (e.g. NGL ZTD) to a
         # different set of output variates (e.g. NCEP surface variables). When
         # enabled via configs.separate_output, a final linear layer maps the
         # input-token projections to the target variates.
@@ -32,7 +32,7 @@ class Model(nn.Module):
         self.decoder_time_feat = bool(getattr(configs, "decoder_time_feat", False))
         self.decoder_time_dim = int(getattr(configs, "decoder_time_dim", 0))
         # Per-neighbour spatial/static and ERA5 values are concatenated
-        # directly to the matching ZTD/ZWD token embedding (no MLP).
+        # directly to the matching ZTD token embedding (no MLP).
         self.max_neighbors = int(getattr(configs, "max_neighbors", 0))
         self.channels_per_neighbor = (int(getattr(configs, "enc_in", 0)) // self.max_neighbors) if self.max_neighbors else 2
         self.spatial_feature_dim = int(getattr(configs, "spatial_feature_dim", 0))
@@ -74,7 +74,7 @@ class Model(nn.Module):
             self.projection = nn.Linear(configs.d_model * configs.enc_in, configs.num_class)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, x_geo=None, x_tgt=None, x_era5_enc=None, x_era5_tgt=None):
-        # x_enc is z-scored with training-split global ZTD/ZWD statistics
+        # x_enc is z-scored with training-split global ZTD statistics
         # in NowcastData.make_sample. Do not normalize each token over its
         # own window: that would remove absolute delay level information.
 
@@ -121,7 +121,7 @@ class Model(nn.Module):
                 )
             if self.era5_dim > 0:
                 # Target-station ERA5 joins static and decoder-time features
-                # after the ztd/zwd token projections have been formed.
+                # after the ztd token projections have been formed.
                 if x_era5_tgt is None:
                     x_era5_tgt = dec_out.new_zeros(dec_out.shape[0], self.era5_dim)
                 dec_out = torch.cat(

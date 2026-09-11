@@ -4,7 +4,7 @@
 
 ## Task
 
-Nowcasting: use **5-minute** NGL zenith tropospheric delays (**ZTD** / **ZWD**) of
+Nowcasting: use **5-minute** NGL zenith total delay (**ZTD**) of
 the nearest GNSS stations over the window **T-2h .. T** (25 five-minute steps) to
 predict the NCEP surface observations (**p, slp, t2m, r2m, u10, v10**) at time **T**
 for each target surface station. The NCEP targets stay hourly.
@@ -26,10 +26,10 @@ Boundaries are configurable via `--train-start/--train-end/--val-start/--val-end
 
 Per sample:
 
-- Input `x`: `(seq_len, 10)` float32, where `seq_len = window_hours*60/ngl_step_minutes + 1` (default 25)
-  - channels `0..9`: `ztd`, `zwd` of the up-to-5 nearest GNSS stations (rank 1..5,
+- Input `x`: `(seq_len, max_neighbors)` float32, where `seq_len = window_hours*60/ngl_step_minutes + 1` (default 25)
+  - channels `0..4`: `ztd` of the up-to-5 nearest GNSS stations (rank 1..5,
     from `dataset/target_gnss_neighbors.parquet`), zero-padded when a station is
-    missing from the input window.
+    missing from the input window. ZWD is intentionally not used.
 - Time marks `x_mark` (optional): `time_encoding: none` passes no marks
   (`x_mark=None`, 10 tokens); `hour_sincos` adds `[sin(2πh/24), cos(2πh/24)]`
   (2 channels); `sincos` adds sin/cos pairs for hour/day-of-week/day-of-month/
@@ -39,7 +39,7 @@ Per sample:
   The first columns are `[dE_km, dN_km, dU_m, ngl_h_m]` plus optional target/GNSS lat/lon;
   const.nc static GNSS features are appended after them. The full vector is normalized with
   train-pair statistics and zeroed for invalid/missing neighbors. For each neighbor, that same
-  vector is concatenated directly to both its ZTD and ZWD embeddings before the encoder (no MLP).
+  vector is concatenated directly to its ZTD embedding before the encoder (no MLP).
 - Target-station feature `x_tgt` (when `model.target_h_feat: true`): per-sample target height
   plus target const.nc static features, normalized with train-station statistics and concatenated
   to the token outputs right before the `separate_output` linear layer. Kept out of the input
@@ -79,7 +79,7 @@ features. First: when `configs.separate_output` is set (our script sets it), a f
 variates, and the non-stationary de-normalization is skipped because the output
 channels are not the input channels. Second: when `configs.spatial_enc` is set,
 the per-neighbor ENU/height/static vector is directly concatenated to each corresponding
-ZTD/ZWD token embedding before the encoder (no MLP); the encoder hidden size therefore becomes
+ZTD token embedding before the encoder (no MLP); the encoder hidden size therefore becomes
 `d_model + n_geo_total` (and adds `era5_dim` when ERA5 is enabled). Third: when `configs.target_h_feat` is set, the per-sample target-station
 features are concatenated to the token outputs just before the
 `separate_output` linear layer (its input becomes `enc_in + target_feat_dim`), so the final layer learns a
@@ -115,7 +115,7 @@ python nowcasting/train_iTransformer_nowcast.py --set stations=0 --set hour_stri
 ### GNSS-only full-station run with a log
 
 The default configuration currently disables ERA5 (`use_era5: false`) and uses
-training-split global ZTD/ZWD statistics. To make that explicit, train all usable
+training-split global ZTD statistics. To make that explicit, train all usable
 stations and mirror both stdout and stderr to a timestamped log:
 
 ```bash

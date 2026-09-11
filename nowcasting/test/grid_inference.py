@@ -3,7 +3,7 @@
 
 For every 0.1-deg grid cell (treated as a virtual target station):
   - find the up-to-5 nearest NGL GNSS stations within 50 km (ranked by distance),
-  - build the same inputs as training (25-step 5-min ZTD/ZWD window +
+  - build the same inputs as training (25-step 5-min ZTD window +
     per-neighbor ENU/height/static encoding + target height/static features + linear
     hour time marks),
   - run the trained iTransformer checkpoint, denormalize with training stats.
@@ -178,6 +178,8 @@ def main() -> None:
     scal = np.load(RUN_OUT / "scalers.npz", allow_pickle=True)
     geo_mean = scal["geo_mean"].astype(np.float32)
     geo_std = scal["geo_std"].astype(np.float32)
+    input_mean = scal["input_mean"].astype(np.float32)
+    input_std = scal["input_std"].astype(np.float32)
     target_feat_mean = scal["target_feat_mean"].astype(np.float32) if "target_feat_mean" in scal.files else None
     target_feat_std = scal["target_feat_std"].astype(np.float32) if "target_feat_std" in scal.files else None
     th_mean = float(scal["target_h_mean"])
@@ -315,7 +317,6 @@ def main() -> None:
     print(f"[data] reading NGL span [{t0_all}, {t1_all}) ...", flush=True)
     ts0 = time.time()
     ztd_all = np.asarray(ngl["ztd"][t0_all:t1_all, need_store], dtype=np.float32)
-    zwd_all = np.asarray(ngl["zwd"][t0_all:t1_all, need_store], dtype=np.float32)
     print(f"[data] span read {ztd_all.shape} in {time.time()-ts0:.1f}s", flush=True)
 
     # time marks (linear, freq=h) over the loaded span
@@ -339,8 +340,8 @@ def main() -> None:
         g0 = t * sph + offset - (win - 1)
         g1 = g0 + win
         sl0, sl1 = g0 - t0_all, g1 - t0_all
-        wz = np.isfinite(ztd_all[sl0:sl1]) & np.isfinite(zwd_all[sl0:sl1])  # (25, U)
-        win_valid = wz.all(axis=0)                                          # (U,)
+        valid_window = np.isfinite(ztd_all[sl0:sl1])  # (25, U)
+        win_valid = valid_window.all(axis=0)                 # (U,)
         cell_valid = np.zeros((n_cells, n_neigh), dtype=bool)
         for j in range(n_neigh):
             ok = nb_idx[:, j] >= 0
@@ -354,9 +355,12 @@ def main() -> None:
         for j in range(n_neigh):
             pos = cell_col_pos[:, j]
             ok = cell_valid[:, j]
-            zt = ztd_all[sl0:sl1, pos]; zw = zwd_all[sl0:sl1, pos]
-            x[:, :, 2 * j] = np.where(ok[None, :], zt, 0.0).T
-            x[:, :, 2 * j + 1] = np.where(ok[None, :], zw, 0.0).T
+            zt = ztd_all[sl0:sl1, pos]
+            x[:, :, j] = np.where(
+                ok[None, :],
+                (zt - input_mean[j]) / input_std[j],
+                0.0,
+            ).T
         xm = np.broadcast_to(mark_all[sl0:sl1], (n_cells, win, mark_all.shape[1])).copy()
         xg = x_geo * cell_valid[:, :, None]
         xt = x_tgt

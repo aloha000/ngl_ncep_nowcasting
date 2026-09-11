@@ -4,11 +4,11 @@
 #   python nowcasting/train_iTransformer_nowcast.py --set stations=128 --set epochs=20
 
 data:
-  ngl_zarr: dataset/ngl_5min.zarr            # 5-minute NGL ZTD/ZWD store
+  ngl_zarr: dataset/ngl_5min.zarr            # 5-minute NGL store; model input uses ZTD only
   ncep_zarr: dataset/ncep_hourly.zarr        # hourly NCEP surface store
-  use_era5: false                            # false = GNSS-only baseline; ERA5 store is not opened
+  use_era5: true                             # true = include ERA5 background fields in the run
   era5_zarr: dataset/era5_hourly_us_2018_2024_standardized.zarr  # hourly standardized ERA5 background fields
-  neighbors_parquet: dataset/target_gnss_neighbors.parquet  # rank-ordered GNSS neighbors per target
+  neighbors_parquet: dataset/target_gnss_neighbors_min100.parquet  # rank-ordered GNSS neighbors per target
   target_stations_parquet: dataset/target_stations.parquet  # target station lat/lon/height_m
   gnss_stations_parquet: dataset/gnss_stations.parquet      # GNSS station lat/lon/height_m
   station_static_npz: dataset/station_static_const.npz        # const.nc sampled at NCEP/GNSS stations
@@ -16,18 +16,20 @@ data:
 
 splits:            # UTC, half-open [start, end); empty end = end of data
   train_start: "2018-01-01T00:00"
-  train_end: "2023-11-01T00:00"
-  val_start: "2023-11-01T00:00"
+  train_end: "2023-08-01T00:00"
+  val_start: "2023-08-01T00:00"
   val_end: "2024-03-01T00:00"
   test_start: "2024-03-01T00:00"
   test_end: ""
 
 sampling:
-  stations: 8                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
+  stations: 0                 # max number of target stations used; <=0 (e.g. 0) = all usable stations
   station_offset: 0            # skip this many target stations first
   max_neighbors: 5             # GNSS neighbors per target (encoder channels = 2*this)
   min_valid_neighbors: 3       # minimum neighbors valid over T-6..T to keep a sample
-  hour_stride: 6               # subsample train hours (1 = keep all)
+  filter_max_neighbors: 100      # neighbors considered when pre-filtering stations/samples
+  filter_min_valid_neighbors: 60  # minimum neighbors valid in the pre-filter window
+  hour_stride: 2               # subsample train hours (1 = keep all)
   val_stride: 1                # subsample val hours
   test_stride: 1               # subsample test hours
   load_full_arrays: false      # load whole NGL stores into RAM (~3.5GB, slow on HDD)
@@ -36,25 +38,26 @@ sampling:
 model:
   window_hours: 2              # input window T-window_hours .. T (5min -> 25 steps); seq_len derived
   pred_len: 1                  # nowcast horizon
-  spatial_enc: true            # append geometry/static to each neighbour ZTD/ZWD embedding (no MLP)
+  spatial_enc: true            # append geometry/static to each neighbour ZTD embedding (no MLP)
   time_encoding: linear        # best of 4 tested (test RMSE 8.35); none | linear | hour_sincos | sincos
   time_freq: h                 # used when time_encoding=linear: 'h' (best) or '5min'
   n_geo: 4                     # 4=[dE_km,dN_km,dU_m,ngl_h_m]; 8 appends target/GNSS lat/lon in spatial_enc
   spatial_mlp_hidden: 128      # retained for config compatibility; unused by direct concatenation
   target_h_feat: true          # z-scored target station height concatenated before the final linear layer
   era5_cache_hours: 24         # per-worker hourly ERA5 grid slices kept in RAM
+  zero_ztd: false              # ablation: set all ZTD inputs to zero after reading them
   d_model: 128
   n_heads: 4
   e_layers: 2
-  d_ff: 512
+  d_ff: 256
   dropout: 0.1
   activation: gelu
 
 training:
   epochs: 20
-  batch_size: 256
+  batch_size: 64
   learning_rate: 0.001
-  patience: 3                  # early stopping patience (val loss)
+  patience: 5                  # early stopping patience (val loss)
   num_workers: 8
   seed: 2021
   target_scale: true           # z-score NCEP targets with train statistics
