@@ -1,0 +1,62 @@
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=1, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=1, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=1, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 6h, step = 6h (fcst_step=1, zarr step axis [6])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+[rank0]:[W911 18:17:54.007827480 ProcessGroupNCCL.cpp:1250] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+[rank2]:[E911 18:17:55.664563066 ProcessGroupNCCL.cpp:542] [Rank 2] Collective WorkNCCL(SeqNum=34185, OpType=_REDUCE_SCATTER_BASE, NumelIn=73664457, NumelOut=24554819, Timeout(ms)=600000) raised the following async exception: NCCL error: unhandled system error (run with NCCL_DEBUG=INFO for details), NCCL version 2.21.5
+ncclSystemError: System call (e.g. socket, malloc) or external library call failed or device error. 
+Last error:
+
+Exception raised from checkForNCCLErrorsInternal at ../torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:2027 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::string) + 0x96 (0x7f8ee736c446 in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libc10.so)
+frame #1: c10d::ProcessGroupNCCL::checkForNCCLErrorsInternal(std::shared_ptr<c10d::NCCLComm>&) + 0x220 (0x7f8e9cbbe2a0 in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: c10d::ProcessGroupNCCL::WorkNCCL::checkAndSetException() + 0x7c (0x7f8e9cbbe4ec in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: c10d::ProcessGroupNCCL::WorkNCCL::isCompleted() + 0x90 (0x7f8e9cbbe700 in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: c10d::ProcessGroupNCCL::watchdogHandler() + 0x1da (0x7f8e9cbc5e7a in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)
+frame #5: c10d::ProcessGroupNCCL::ncclCommWatchdog() + 0x14d (0x7f8e9cbc793d in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch_cuda.so)
+frame #6: <unknown function> + 0x145c0 (0x7f8ee787e5c0 in /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/lib/libtorch.so)
+frame #7: <unknown function> + 0x94ac3 (0x7f8f88562ac3 in /usr/lib/x86_64-linux-gnu/libc.so.6)
+frame #8: clone + 0x44 (0x7f8f885f3bf4 in /usr/lib/x86_64-linux-gnu/libc.so.6)
+
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 48 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

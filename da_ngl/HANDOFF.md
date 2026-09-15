@@ -69,8 +69,10 @@ main/utils/{utils.py,utils_data.py}
   （两者同一套）；**NGL 用训练集全局 mean/std**（2333.6450 / 119.7633，存在 store 里）。
 * **tp 变换**：`clip(min=0) → log1p → (x−μ)/σ`；ERA5 的 tp 单位是 m 所以先 ×1000，
   IMERG 已经是 mm 所以**不乘 1000**。
-* **标签 71 通道**：0–68 ERA5、69 = IMERG tp（训练用）、**70 = `era5_tp`
-  （仅评估用，训练不读）**。训练读多少由 `configs.label_n_chans = 70` 控制。
+* **标签 71 通道**：0–68 ERA5、69 = IMERG tp、70 = ERA5 tp（两者都建在 store 里）。
+  训练用哪个 tp 由 `configs.tp_label_source` 控制（`'imerg'` / `'era5'`，**当前 `'era5'`**）：
+  `AssimilationDataset._select_label()` 把选中的那个放到第 69 通道，训练仍只读 70 通道
+  （`configs.label_n_chans = 70`）。评估端会同时报 model vs 两个 tp 以及两产品的不一致度。
 * **模型要求 H、W 能被 16 整除**：80 满足，120 会被自动 replicate pad 到 128、输出裁回。
 * 残差结构 `out = decoder(...) + bg` **只加在前 69 通道**（tp 没有 FuXi 背景）。
 
@@ -124,9 +126,10 @@ python preprocessing/build_label_zarr.py --force --tp-transform standardized
 
 # 训练（本容器只有 1 张卡；3 卡在另一台机器）
 cd main_code
-CUDA_VISIBLE_DEVICES=0,1,2 MASTER_PORT=22336 nohup bash train.sh > ../logs/fuxi_da.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0,1,2 MASTER_PORT=22336 nohup bash train.sh > /dev/null 2>&1 &
+# 进度看 da_ngl/logs/{model_id}_{模型配置}.log（stdout 那边只有 WARNING）
 
-# 评估出图
+# 评估出图（结果直接写进同一次实验的 results 文件夹）
 CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test
 ```
 
@@ -155,3 +158,100 @@ CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test
 
 > 读 `da_ngl/HANDOFF.md`，继续做同化。今天已经建好三个 zarr（NGL/FuXi/label）并完成一次
 > 3 卡训练（结果：分析 0.08412 vs 背景 0.08379，基本没超过背景场）。我想先做第 5 节里的第 N 项。
+
+---
+
+## 9. 2026-09-11 更新
+
+### 9.1 已修：图的时间轴是 2022
+
+`plot_results.py` 里画图用的是 `label_time[:n]`（store 全局轴的前 n 个 = 2022-01-01 起），
+而测试样本其实是第 4384–5475 号（2025-01-01 起）。**只是标签错，数值不受影响。**
+已改成按样本取 `sample_times = label_time[[s[0] for s in dataset.samples]]`，
+`timeseries*.png` 和 `maps_*.png` / `tp_maps.png` 的标题现在都是 2025 年。
+原图在 `work_dir/plots/`（2h 版）已用同样数值重新出过。
+
+### 9.2 观测窗拉长到 6h：零结果
+
+`obs_frames = 25 -> 73`（2h -> 6h，窗口 `[T-6h, T]`，正好覆盖整个 FuXi 预报时段），
+3 卡重训 20000 步（日志 `da_ngl/logs/fuxi_da_6h.log`）。同等 69 通道下：
+
+| | 2h（25 帧） | 6h（73 帧） |
+| --- | --- | --- |
+| 分析 | 0.0841200 | 0.0840768 |
+| 背景 | 0.0837865 | 0.0837865 |
+| 相对背景 | −0.398% | −0.346% |
+| 优于背景通道 | 26/69 | 29/69 |
+| 平均改动 | 0.010428 | 0.010245 |
+| best val | 0.0889215 | 0.0889266 |
+| tp（vs IMERG） | 0.32921 | 0.33005 |
+
+**观测多 3 倍，结果几乎不动**，说明瓶颈不是观测给得太少。失效模式也一模一样
+（最差仍是 `t925 r925 r1000 t1000 msl z1000`；改动最大仍是低层 `r` 和 `t`）。
+
+⚠️ 6h 那次训练把 `work_dir/model/` 里的 2h checkpoint **全覆盖了**（2h 的数值还留在
+`work_dir/plots/metrics.json`）。6h 的图在 `work_dir/plots_6h/`。
+
+### 9.3 改动：tp 训练标签可切换（当前用 ERA5 tp）
+
+* `configs.py` 新增 `tp_label_source = 'era5'`（可选 `'imerg'`）
+* `main/utils/utils_data.py`：`AssimilationDataset._select_label()` 按该开关拼 70 通道标签
+  （0..68 ERA5 + 选中的 tp）。请求 71 通道时仍返回原始 store（评估要两个 tp）
+* `plot_results.py`：按同一开关构造 `truth`，并同时报告
+  `mae_modeltp_vs_era5tp_std` / `mae_modeltp_vs_imergtp_std` / `mae_era5tp_vs_imerg_std`
+* 动机：ERA5 tp 与 IMERG tp 的不一致度是 0.436，比模型自己的 tp 误差（0.329）还大，
+  训练目标和状态通道（全部来自 ERA5）自相矛盾
+
+### 9.4 一个还没验证的强假设
+
+观测是**绝对 ZTD**，背景场没有 ZTD 通道 -> 网络无法构造增量（obs − H(bg)），
+只能拟合绝对 ZTD。而绝对 ZTD 里 **85% 的方差是站点静态偏移**
+（跨站时间均值 std 0.92σ vs 站内时间 std 0.39σ）。
+计划中的验证：把观测换成"减掉站点气候态"的距平，不需要重训就能测。
+
+---
+
+## 10. 输出目录约定（2026-09-11 起）
+
+一次实验 = 一个文件夹：
+
+```
+main_code/work_dir/results/{model_id}_{实验配置}/
+    {model_id}_{模型配置}.pth     <- 只保留 val 最好的那个模型
+    summary.json                  <- 最佳 val / 逐 epoch loss / 背景-only / test
+    train_loss.npy val_loss.npy lr.npy
+    loss_curve.png channel_metrics.png maps_*.png timeseries*.png tp_maps.png
+    metrics.csv metrics.json
+```
+
+日志（信息量精简过，不再每步每卡都写）：
+
+```
+da_ngl/logs/{model_id}_{模型配置}.log
+```
+
+三个 tag：
+
+| tag | 含义 | 默认 |
+| --- | --- | --- |
+| `model_id` | 入参，文件夹/文件前缀 | `configs.model_id = 'model'` |
+| `实验配置` | 数据/同化设置 | 自动：`lead6h_obs6h_era5tp` |
+| `模型配置` | 网络结构 | 自动：`ed128_d222` |
+
+自动 tag 的规则：`lead{fcst_step*6}h_obs{obs_frames*5//60}h_{tp_label_source}tp`
+和 `ed{model_embed_dim}_d{depth}`。想自己起名就在 configs 里写死字符串，
+或命令行覆盖：
+
+```bash
+python train_FSDP.py --configs configs --model_id exp3 --exp_tag obs6h_v2 --arch_tag ed128_d222
+python plot_results.py --model_id exp3 --exp_tag obs6h_v2 --arch_tag ed128_d222 --split test
+```
+
+其他改动：
+
+* 训练**只在 val 变好时**存模型（`configs.min_delta` 控制阈值），旧的多 checkpoint 不再产生
+* 跑完会先 reload 最好的那个 checkpoint 再做最终评估，所以 `summary.json` / 出图对应的是 best
+* 进度行改成每 `configs.log_interval = 100` 步一行、且只有 rank 0 写；`[Data]/[Process]/[Model]`
+  计时和 `[MaxMem]` 去掉了（11MB 的 log -> 3KB 量级）
+* logger 的 stdout handler 降成 WARNING，所以 `nohup ... > xxx.log` 那个重定向文件不会
+  再复制一份完整日志

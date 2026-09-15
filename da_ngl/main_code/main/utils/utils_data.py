@@ -68,6 +68,14 @@ class AssimilationDataset(Dataset):
         self.n_label_chans = int(
             n_label_chans if n_label_chans is not None
             else getattr(cfg, "label_n_chans", 70))
+        # The label store keeps 71 channels: ERA5 0..68, IMERG tp (69) and
+        # ERA5 tp (70).  ``tp_label_source`` decides which tp channel 69 of
+        # the *training* label carries.  Asking for every store channel
+        # (evaluation) returns the raw layout so both tps stay available.
+        self.tp_source = str(getattr(cfg, "tp_label_source", "imerg")).lower()
+        if self.tp_source not in ("imerg", "era5"):
+            raise ValueError(f"unknown tp_label_source {self.tp_source!r}")
+        self.tp_index = 70 if self.tp_source == "era5" else 69
         self.bg_path = str(cfg.fuxi_zarr)
         self.obs_path = str(cfg.ngl_zarr)
         self.label_path = str(cfg.label_zarr)
@@ -80,6 +88,24 @@ class AssimilationDataset(Dataset):
         self.label_step = _assert_regular(self.label_time, "label.time")
 
         self.obs_frames = int(cfg.obs_frames)
+
+        # observation set: absolute ZTD and/or the innovation obs - H(FuXi).
+        # The FuXi ZTD store is built on the *label* time axis (see
+        # preprocessing/build_ztd_fuxi_zarr.py), so a sample's background ZTD is
+        # simply ``ztd_fuxi[lb_i]`` and the innovation is
+        # ``obs_mm(t) - ztd_fuxi(lb_i)`` for every frame of the window.
+        self.obs_mode = str(getattr(cfg, "obs_mode", "absolute")).lower()
+        if self.obs_mode not in ("absolute", "residual", "both"):
+            raise ValueError(f"obs_mode must be absolute|residual|both, "
+                             f"got {self.obs_mode!r}")
+        self.res_scale_mm = float(getattr(cfg, "obs_res_scale_mm", 15.0))
+        self.res_path = None
+        if self.obs_mode != "absolute":
+            self.res_path = str(getattr(cfg, "ztd_fuxi_zarr", ""))
+            if not os.path.exists(self.res_path):
+                raise FileNotFoundError(
+                    f"obs_mode={self.obs_mode!r} needs {self.res_path}; build it "
+                    f"with preprocessing/build_ztd_fuxi_zarr.py")
         self.obs_end_offset = pd.Timedelta(minutes=int(getattr(cfg, "obs_end_offset_minutes", 0)))
 
         # Background (FuXi) convention, mirroring the reference ``read_bg``:
@@ -128,6 +154,7 @@ class AssimilationDataset(Dataset):
         self._handles = None
         self._handles_pid = None
         print(f"[Dataset] label channels used = {self.n_label_chans}")
+        print(f"[Dataset] tp training target = {self.tp_source} (store channel {self.tp_index})")
         print(f"[Dataset] {times[0]} ~ {times[-1]}  wanted={len(times)}  usable={len(self.samples)}"
               f"  (skip bg={n_missing_bg}, label={n_missing_label}, obs={n_missing_obs})")
 
@@ -139,6 +166,7 @@ class AssimilationDataset(Dataset):
                 zarr.open(self.bg_path, "r"),
                 zarr.open(self.obs_path, "r"),
                 zarr.open(self.label_path, "r"),
+                zarr.open(self.res_path, "r") if self.res_path else None,
             )
             self._handles_pid = pid
         return self._handles
@@ -146,16 +174,44 @@ class AssimilationDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    def _select_label(self, full):
+        """(71, H, W) store channels -> the label the model should see.
+
+        The state channels 0..68 are always ERA5.  A request for all 71
+        channels returns the raw store (evaluation needs both tps);
+        otherwise ``n_label_chans`` channels are returned with the tp taken
+        from ``tp_label_source`` (IMERG = 69, ERA5 = 70).
+        """
+        n = self.n_label_chans
+        if n >= full.shape[0]:
+            return full
+        n_state = 69 if n > 69 else n
+        idx = list(range(n_state))
+        if n > n_state:
+            idx.append(self.tp_index)
+        return np.ascontiguousarray(full[idx])
+
     def __getitem__(self, idx):
         lb_i, bg_i, obs_i = self.samples[idx]
-        bg_store, obs_store, label_store = self._store()
+        bg_store, obs_store, label_store, res_store = self._store()
 
         bg = np.asarray(bg_store["z"][bg_i, self.lead_index],
                         dtype=np.float32)[None]                         # (1, 69, H, W)
-        obs = np.asarray(obs_store["ztd"][obs_i:obs_i + self.obs_frames],
-                         dtype=np.float32)[:, None]                     # (F, 1, H, W)
-        label = np.asarray(label_store["label"][lb_i, : self.n_label_chans],
-                           dtype=np.float32)                                # (N, H, W)
+        ztd = np.asarray(obs_store["ztd"][obs_i:obs_i + self.obs_frames],
+                         dtype=np.float32)                              # (F, H, W) std.
+        full = np.asarray(label_store["label"][lb_i], dtype=np.float32)   # (71, H, W)
+        label = self._select_label(full)
+
+        if self.obs_mode == "absolute":
+            obs = ztd[:, None]                                          # (F, 1, H, W)
+        else:
+            z_mean = float(obs_store["ztd_train_mean"][0])
+            z_std = float(obs_store["ztd_train_std"][0])
+            fuxi_mm = np.asarray(res_store["ztd_fuxi"][lb_i], dtype=np.float32)
+            innovation = (ztd * np.float32(z_std) + np.float32(z_mean)
+                          - fuxi_mm[None]) / np.float32(self.res_scale_mm)
+            obs = (np.concatenate([ztd[:, None], innovation[:, None]], axis=1)
+                   if self.obs_mode == "both" else innovation[:, None])
 
         return torch.from_numpy(bg), torch.from_numpy(obs), torch.from_numpy(label)
 

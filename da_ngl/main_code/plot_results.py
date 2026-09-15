@@ -40,12 +40,22 @@ from common import (CHANNELS, LABEL_CHANNELS, TRAIN_LABEL_CHANNELS,  # noqa: E40
                     era5_channel_stats)
 
 
-def latest_checkpoint(work_dir: Path) -> Path:
-    ckpts = sorted((work_dir / "model").glob("iteration_*.pth"),
-                   key=lambda p: int(p.stem.split("_")[1]))
-    if not ckpts:
-        raise SystemExit(f"no checkpoints under {work_dir}/model")
-    return ckpts[-1]
+def resolve_checkpoint(cfg) -> Path:
+    """The run's val-best checkpoint, falling back to the legacy layouts."""
+    from main.utils import checkpoint_file, experiment_dir
+
+    best = Path(checkpoint_file(cfg))
+    if best.exists():
+        return best
+    for d in (Path(experiment_dir(cfg)), Path(cfg.work_dir) / "model"):
+        if d.is_dir():
+            ck = sorted(d.glob("iteration_*.pth"), key=lambda p: int(p.stem.split("_")[1]))
+            if ck:
+                print(f"[warn] {best} not found -- falling back to the legacy "
+                      f"checkpoint {ck[-1]} (check --set obs_mode/--exp_tag: the "
+                      f"input channel count depends on it)")
+                return ck[-1]
+    raise SystemExit("no checkpoint found -- pass --checkpoint, or check model_id/exp_tag")
 
 
 def load_model(cfg, ckpt: Path, device):
@@ -82,15 +92,49 @@ def main():
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--model_id", type=str, default=None)
+    ap.add_argument("--exp_tag", type=str, default=None)
+    ap.add_argument("--arch_tag", type=str, default=None)
+    ap.add_argument("--zero-obs", action="store_true",
+                    help="no-GNSS ablation: feed 0 (climatological mean) ZTD")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override any configs.py knob, e.g. --set obs_mode=both "
+                         "(must match the training run, otherwise the run folder "
+                         "and the input channels will not line up)")
     args = ap.parse_args()
 
     import importlib
-    cfg = importlib.import_module(args.configs)
-    work_dir = Path(cfg.work_dir)
-    out_dir = args.out or (work_dir / "plots")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from main.utils import experiment_dir
 
-    ckpt = args.checkpoint or latest_checkpoint(work_dir)
+    cfg = importlib.import_module(args.configs)
+    for key in ("model_id", "exp_tag", "arch_tag"):
+        value = getattr(args, key)
+        if value is not None:
+            setattr(cfg, key, value)
+    if args.zero_obs:
+        cfg.zero_obs = True
+    overridden = set()
+    if args.set:
+        from train_FSDP import _coerce
+        for item in args.set:
+            if "=" not in item:
+                ap.error(f"--set expects KEY=VALUE, got {item!r}")
+            key, value = item.split("=", 1)
+            key = key.strip()
+            setattr(cfg, key, _coerce(value.strip()))
+            overridden.add(key)
+    if "model_obs_chans" not in overridden:
+        from main.utils import obs_chans
+        cfg.model_obs_chans = obs_chans(cfg)
+
+    work_dir = Path(cfg.work_dir)
+    run_dir = Path(experiment_dir(cfg))
+    out_dir = args.out or run_dir            # results/<model_id>_<实验配置>/
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not args.checkpoint:
+        print(f"[eval] run folder {run_dir}")
+
+    ckpt = args.checkpoint or resolve_checkpoint(cfg)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[eval] checkpoint {ckpt}")
     model, iteration = load_model(cfg, ckpt, device)
@@ -114,6 +158,11 @@ def main():
     mean_era5, std_era5 = mean_era5[:70], std_era5[:70]
     n_ch = len(TRAIN_LABEL_CHANNELS)    # 70 = model I/O (ERA5 69 + IMERG tp)
     n_bg = len(CHANNELS)                # 69 (the background has no tp)
+    # which tp the model was trained on (config: tp_label_source); the store
+    # keeps both, so the other one is still reported as a cross-check
+    tp_source = str(getattr(cfg, "tp_label_source", "imerg")).lower()
+    tp_name = f"{tp_source}_tp"
+    tp_other_name = "imerg_tp" if tp_source == "era5" else "era5_tp"
 
     acc = {
         "model_abs": np.zeros(n_ch), "model_sq": np.zeros(n_ch), "model_bias": np.zeros(n_ch),
@@ -122,8 +171,9 @@ def main():
         "wsum": np.zeros(n_ch), "wsum_bg": np.zeros(n_bg),
     }
     series_model, series_bg, series_true = [], [], []
-    series_etp, series_etp_err = [], []
-    etp_stats = {"vs_imerg": 0.0, "model_vs_etp": 0.0, "n": 0.0}
+    series_etp, series_etp_err, series_imerg = [], [], []
+    etp_stats = {"vs_imerg": 0.0, "model_vs_etp": 0.0,
+                 "model_vs_imerg": 0.0, "n": 0.0}
     series_an_err, series_bg_err = [], []
     keep_maps, keep_tp = [], []
 
@@ -137,8 +187,13 @@ def main():
             bg = process_bg(batch_fcst, device)
             obs = process_obs(batch_obs, cfg, device)
             full = batch_era5.to(device).float()               # (B, 71, H, W)
-            era5_tp = full[:, -1]                              # evaluation-only channel
-            truth = full[:, :n_ch].unsqueeze(1)                # model I/O channels
+            imerg_tp = full[:, 69]                             # store channel 69
+            era5_tp = full[:, 70]                              # store channel 70
+            # the model I/O channels with the tp it was trained on
+            truth = torch.cat(
+                [full[:, :n_bg],
+                 (era5_tp if tp_source == "era5" else imerg_tp).unsqueeze(1)],
+                dim=1).unsqueeze(1)
             out = model(bg, obs).float()
 
             # drop the singleton time dim: work in (B, C, H, W)
@@ -178,14 +233,20 @@ def main():
             den_etp = (w[:, 0] * m_etp).sum(dim=(1, 2)).clamp_min(1e-6)
             series_etp.append(((torch.nan_to_num(era5_tp) * w[:, 0] * m_etp).sum(dim=(1, 2))
                                / den_etp).cpu().numpy())
+            m_imerg = torch.isfinite(imerg_tp).float()
+            den_imerg = (w[:, 0] * m_imerg).sum(dim=(1, 2)).clamp_min(1e-6)
+            series_imerg.append(((torch.nan_to_num(imerg_tp) * w[:, 0] * m_imerg)
+                                 .sum(dim=(1, 2)) / den_imerg).cpu().numpy())
             # domain-mean |ERA5 tp - IMERG tp| (product disagreement)
-            a_etp = (era5_tp - tgt[:, 69]).abs() * w[:, 0] * m_etp
+            a_etp = (era5_tp - torch.nan_to_num(imerg_tp)).abs() * w[:, 0] * m_etp
             series_etp_err.append((a_etp.sum(dim=(1, 2)) / den_etp).cpu().numpy())
-            both = (torch.isfinite(era5_tp) & torch.isfinite(truth[:, 69])).float()
-            etp_stats["vs_imerg"] += float(((era5_tp - torch.nan_to_num(truth[:, 69])).abs()
+            both = (torch.isfinite(era5_tp) & torch.isfinite(imerg_tp)).float()
+            etp_stats["vs_imerg"] += float(((era5_tp - torch.nan_to_num(imerg_tp)).abs()
                                              * both).sum())
             etp_stats["model_vs_etp"] += float(((out[:, 69] - torch.nan_to_num(era5_tp)).abs()
                                                  * both).sum())
+            etp_stats["model_vs_imerg"] += float(((out[:, 69] - torch.nan_to_num(imerg_tp)).abs()
+                                                   * both).sum())
             etp_stats["n"] += float(both.sum())
             den_b = (w * m69).sum(dim=(2, 3)).clamp_min(1e-6)    # (B, 69)
             series_model.append(((out * w * m).sum(dim=(2, 3)) / den_m).cpu().numpy())
@@ -205,7 +266,9 @@ def main():
                 for k in range(B):
                     if len(keep_tp) < 2:
                         keep_tp.append((idx[k], out[k, 69].cpu().numpy(),
-                                        truth[k, 69].cpu().numpy(), era5_tp[k].cpu().numpy()))
+                                        truth[k, 69].cpu().numpy(),
+                                        imerg_tp[k].cpu().numpy(),
+                                        era5_tp[k].cpu().numpy()))
             if bi % 50 == 0:
                 print(f"  batch {bi}/{len(loader)}", flush=True)
 
@@ -228,7 +291,7 @@ def main():
     mae_bg_phys = pad_bg(mae_bg * std_era5[:n_bg])
     # tp is log1p-standardised: report the difference in the log space (mm is non-linear)
     df = pd.DataFrame({
-        "channel": TRAIN_LABEL_CHANNELS,
+        "channel": list(TRAIN_LABEL_CHANNELS[:-1]) + [tp_name],
         "mae_analysis_std": mae_model,
         "mae_bg_std": pad_bg(mae_bg),
         "rmse_analysis_std": rmse_model,
@@ -247,13 +310,16 @@ def main():
     summary = {
         "checkpoint": str(ckpt), "iteration": iteration, "split": args.split,
         "n_samples": len(dataset),
+        "zero_obs": bool(getattr(cfg, "zero_obs", False)),
         "mae_analysis_std_69ch": float(mae_model[:n_bg].mean()),
         "mae_bg_std_69ch": float(mae_bg.mean()),
         "improve_pct_69ch": float(100 * (mae_bg.mean() - mae_model[:n_bg].mean()) / mae_bg.mean()),
         "mae_analysis_std_70ch": float(mae_model.mean()),
-        "mae_tp_std": float(mae_model[69]),
+        "tp_label_source": tp_source,
+        "mae_tp_std": float(mae_model[69]),          # vs the training tp
         "mae_era5tp_vs_imerg_std": etp_stats["vs_imerg"] / max(etp_stats["n"], 1.0),
         "mae_modeltp_vs_era5tp_std": etp_stats["model_vs_etp"] / max(etp_stats["n"], 1.0),
+        "mae_modeltp_vs_imergtp_std": etp_stats["model_vs_imerg"] / max(etp_stats["n"], 1.0),
         "n_channels_better": int((mae_model[:n_bg] < mae_bg).sum()),
         "mae_climatology_std_69ch": float(mae_clim[:n_bg].mean()),
         "mean_abs_analysis_minus_bg_69ch": float(delta.mean()),
@@ -263,9 +329,10 @@ def main():
     print(json.dumps(summary, indent=2))
 
     # ---------------------------------------------------------------- plots
-    tr = np.load(work_dir / "train_loss.npy")
-    va = np.load(work_dir / "val_loss.npy")
-    lr = np.load(work_dir / "lr.npy")
+    loss_src = run_dir if (run_dir / "train_loss.npy").exists() else work_dir
+    tr = np.load(loss_src / "train_loss.npy")
+    va = np.load(loss_src / "val_loss.npy")
+    lr = np.load(loss_src / "lr.npy")
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.2), dpi=130)
     ep = np.arange(1, len(tr) + 1)
@@ -362,17 +429,20 @@ def main():
 
     # tp separately (no background available)
     fig, ax = plt.subplots(2, 1, figsize=(13, 5), dpi=130, sharex=True)
-    setp = np.concatenate(series_etp, 0)
-    ax[0].plot(times, st[:, 69], "k-", lw=1.1, label="IMERG tp (training target)")
-    ax[0].plot(times, setp, "-", c="tab:green", lw=1, label="ERA5 tp (reference)")
+    setp = np.concatenate(series_etp, 0)          # ERA5 tp domain mean
+    simerg = np.concatenate(series_imerg, 0)      # IMERG tp domain mean
+    stp_other = setp if tp_source == "imerg" else simerg
+    ax[0].plot(times, st[:, 69], "k-", lw=1.1, label=f"{tp_name} (training target)")
+    ax[0].plot(times, setp, "-", c="tab:orange", lw=1, label="era5_tp")
+    ax[0].plot(times, simerg, "-", c="tab:green", lw=1, label="imerg_tp")
     ax[0].plot(times, sm[:, 69], "-", c="tab:blue", lw=1, label="analysis tp")
     ax[0].set_ylabel("tp domain mean"); ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
     ax[1].plot(times, np.abs(sm[:, 69] - st[:, 69]), "-", c="tab:blue", lw=1,
-               label=f"|analysis - IMERG| mean {np.abs(sm[:, 69] - st[:, 69]).mean():.4f}")
-    ax[1].plot(times, np.abs(sm[:, 69] - setp), "-", c="tab:green", lw=1,
-               label=f"|analysis - ERA5tp| mean {np.abs(sm[:, 69] - setp).mean():.4f}")
-    ax[1].plot(times, np.abs(setp - st[:, 69]), "--", c="0.45", lw=1,
-               label=f"|ERA5tp - IMERG| mean {np.abs(setp - st[:, 69]).mean():.4f}")
+               label=f"|analysis - {tp_name}| mean {np.abs(sm[:, 69] - st[:, 69]).mean():.4f}")
+    ax[1].plot(times, np.abs(sm[:, 69] - stp_other), "-", c="tab:green", lw=1,
+               label=f"|analysis - {tp_other_name}| mean {np.abs(sm[:, 69] - stp_other).mean():.4f}")
+    ax[1].plot(times, np.abs(setp - simerg), "--", c="0.45", lw=1,
+               label=f"|era5_tp - imerg_tp| mean {np.abs(setp - simerg).mean():.4f}")
     ax[1].axhline(np.abs(st[:, 69]).mean(), ls="--", c="0.4", lw=1,
                   label=f"climatology mean {np.abs(st[:, 69]).mean():.4f}")
     ax[1].set_ylabel("tp domain-mean |err|"); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
@@ -382,13 +452,14 @@ def main():
 
     # tp maps
     if keep_tp:
-        idx, tp_out, tp_true, tp_era5 = keep_tp[0]
-        fig, axes = plt.subplots(1, 4, figsize=(21, 3.6), dpi=130)
+        idx, tp_out, tp_true, tp_imerg, tp_era5 = keep_tp[0]
+        fig, axes = plt.subplots(1, 5, figsize=(26, 3.6), dpi=130)
         t = sample_times[idx]
-        for a, (d, title) in zip(axes, [(tp_true, f"IMERG tp truth {t}"),
-                                        (tp_out, "analysis tp"),
-                                        (tp_era5, "ERA5 tp (reference)"),
-                                        (tp_out - tp_era5, "analysis - ERA5 tp")]):
+        for a, (d, title) in zip(axes, [(tp_imerg, f"IMERG tp {t}"),
+                                        (tp_era5, f"ERA5 tp {t}"),
+                                        (tp_out, f"analysis tp (trained vs {tp_name})"),
+                                        (tp_out - tp_true, f"analysis - {tp_name}"),
+                                        (tp_imerg - tp_era5, "IMERG - ERA5")]):
             lim = np.nanpercentile(np.abs(d), 99) or 1.0
             cmap = "coolwarm" if "diff" in title or "- truth" in title else "viridis"
             im = a.imshow(d, origin="lower", cmap=cmap,

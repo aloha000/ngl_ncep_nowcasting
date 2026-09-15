@@ -12,6 +12,7 @@ import argparse
 import importlib
 import os
 import random
+import json
 import time
 
 import numpy as np
@@ -29,17 +30,28 @@ from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
 from main.model import (AssimilationNetv6, EarlyStopping, WarmupScheduler,
                         build_optimizer, get_parameter_number)
-from main.utils import build_dataloader, create_logger, load_checkpoint
+from main.utils import (build_dataloader, checkpoint_file, create_logger,
+                        experiment_dir, exp_tag, arch_tag, load_checkpoint,
+                        log_file, model_id, obs_chans)
 
 
-def init_dist(rank, configs, master_port, world_size):
+def init_dist(rank, configs, master_port, world_size, overrides=None):
     xconfig = importlib.import_module(configs)
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            setattr(xconfig, key, value)
+    if 'model_obs_chans' not in (overrides or {}):
+        # obs_mode may have just been overridden -- keep the channel count in sync
+        xconfig.model_obs_chans = obs_chans(xconfig)
 
     if rank == 0:
-        os.makedirs(os.path.join(xconfig.work_dir, 'model'), exist_ok=True)
-        os.makedirs(os.path.join(xconfig.work_dir, 'logs'), exist_ok=True)
+        os.makedirs(experiment_dir(xconfig), exist_ok=True)
+        os.makedirs(os.path.dirname(log_file(xconfig)), exist_ok=True)
 
-    xconfig.logger = create_logger(xconfig.work_dir, 'Train')
+    xconfig.logger = create_logger(
+        xconfig.work_dir, 'Train',
+        log_dir=os.path.dirname(log_file(xconfig)),
+        file_name=os.path.basename(log_file(xconfig))[:-len('.log')])
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = master_port
@@ -52,12 +64,14 @@ def init_dist(rank, configs, master_port, world_size):
     torch.manual_seed(seed)
     random.seed(seed)
 
-    xconfig.logger.info(f'[Work Dir]: {xconfig.work_dir}\n'
-                        f'[Configs]: {configs}\n'
-                        f'[World Size]: {world_size}\n'
-                        f'[Rank]: {rank}\n'
-                        f'[Device]: {torch.cuda.current_device()}\n'
-                        f'[Seed]: {seed}\n')
+    if rank == 0:
+        xconfig.logger.info(
+            f'[Configs]: {configs} | world size {world_size} | seed {seed}\n'
+            f'[Run]: model_id={model_id(xconfig)} 实验配置={exp_tag(xconfig)} '
+            f'模型配置={arch_tag(xconfig)}\n'
+            f'[Results]: {experiment_dir(xconfig)}\n'
+            f'[Checkpoint]: {checkpoint_file(xconfig)}\n'
+            f'[Log]: {log_file(xconfig)}')
     torch.cuda.set_device(rank)
     xconfig.rank = rank
     return xconfig
@@ -81,11 +95,21 @@ def process_obs(obs, cfg, rank):
     validity mask (per frame), the optional ``lat``/``lon`` channels are added
     and everything is zeroed where the frame is invalid -- exactly the masking
     convention of the original packet.
+
+    With ``cfg.zero_obs`` the ZTD values are replaced by 0 -- the training-mean
+    ZTD, i.e. the same value a station-less cell carries -- *after* the
+    validity mask is derived.  The station geometry/availability survives, the
+    ZTD content does not.  This is the "no GNSS" ablation; doing it here means
+    training and ``plot_results.py`` (which imports this function) see the same
+    observations.
     """
     obs = obs.to(rank).float()
     finite = torch.isfinite(obs)
     data = torch.nan_to_num(obs)
     mask = finite.any(dim=2, keepdim=True).float()      # (B,T,1,H,W)
+
+    if getattr(cfg, 'zero_obs', False):
+        data = torch.zeros_like(data)                   # no-GNSS ablation
 
     B, T, _, H, W = data.shape
     extra = []
@@ -109,7 +133,12 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
     hw = getattr(cfg, 'grid_hw', None)
 
     time_start = time.perf_counter()
-    cfg.logger.info(f'[Epoch Iteration Number] ||| {len(dataloader)}')
+    log_interval = int(getattr(cfg, 'log_interval', 100) or 0)
+    log_batch = bool(getattr(cfg, 'log_batch_loss', False))
+    run_sum, run_n = 0.0, 0
+    t_log = time_start
+    if rank == 0:
+        cfg.logger.info(f'[Epoch {getattr(cfg, "epoch", 0) + 1}] {len(dataloader)} iterations')
     for batch_fcst, batch_obs, batch_era5 in dataloader:
         cfg.iteration += 1
 
@@ -144,14 +173,27 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
         ddp_loss[1] += 1
         cfg.lr.append(optimizer.param_groups[0]['lr'])
 
-        time_model = time.perf_counter()
-        cfg.logger.info(f"[Rank]: {rank} ||| [Iteration]: {cfg.iteration} ||| "
-                        f"[LR]: {optimizer.param_groups[0]['lr']:.3e} ||| "
-                        f"[Loss]: {loss.item():.4f} ||| "
-                        f"[Data]: {time_data - time_start:.2f}s ||| "
-                        f"[Process]: {time_data_process - time_data:.2f}s ||| "
-                        f"[Model]: {time_model - time_data_process:.2f}s ||| "
-                        f"[MaxMem]: {torch.cuda.max_memory_allocated(rank) / 1024 ** 2:.0f}MB")
+        batch_loss = float(loss.item())
+        if rank == 0 and log_batch:
+            cfg.iter_loss.append(batch_loss)
+            run_sum += batch_loss
+            run_n += 1
+        if rank == 0 and (log_batch or (log_interval and cfg.iteration % log_interval == 0)):
+            now = time.perf_counter()
+            lr = optimizer.param_groups[0]["lr"]
+            if log_batch:
+                # every batch: its own loss, the running mean of the epoch so far,
+                # the learning rate and the wall time of that single step
+                cfg.logger.info(f'[iter {cfg.iteration}/{cfg.num_iteration}] '
+                                f'epoch {getattr(cfg, "epoch", 0) + 1} '
+                                f'loss={batch_loss:.5f} '
+                                f'mean={run_sum / max(run_n, 1):.5f} '
+                                f'lr={lr:.3e} {now - t_log:.3f}s')
+            else:
+                cfg.logger.info(f'[iter {cfg.iteration}/{cfg.num_iteration}] '
+                                f'loss={batch_loss:.4f} lr={lr:.3e} '
+                                f'{(now - t_log) / log_interval:.2f}s/it')
+            t_log = now
 
         if cfg.warmup:
             cfg.warmup = warmup_scheduler()
@@ -165,8 +207,9 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
 
     dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
     epoch_loss = (ddp_loss[0] / ddp_loss[1].clamp_min(1)).item()
-    cfg.logger.info(f"[Rank]: {rank} ||| [Iteration]: {cfg.iteration} ||| "
-                    f"[Epoch loss]: {epoch_loss:.4f}")
+    if rank == 0:
+        cfg.logger.info(f'[Epoch {getattr(cfg, "epoch", 0) + 1}] '
+                        f'train loss={epoch_loss:.4f} (iteration {cfg.iteration})')
     return model, epoch_loss
 
 
@@ -201,28 +244,31 @@ def evaluate(cfg, model, rank, dataloader, get_fcst_loss=False):
 
     dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
     epoch_loss = (ddp_loss[0] / ddp_loss[1].clamp_min(1)).item()
-    cfg.logger.info('{:#^75}'.format('Evaluation'))
-    cfg.logger.info(f"[Rank]: {rank} ||| [Iteration]: {cfg.iteration} ||| "
-                    f"[Loss]: {epoch_loss:.4f} ||| [Background loss]: {get_fcst_loss}")
-    cfg.logger.info('{:#^75}'.format('Evaluation'))
+    if rank == 0:
+        kind = 'background-only' if get_fcst_loss else 'model'
+        cfg.logger.info(f'[Eval] {kind} loss={epoch_loss:.4f} (iteration {cfg.iteration})')
     return epoch_loss
 
 
-def save_checkpoint_fsdp(cfg, model, rank, optimizer=None, scheduler=None):
+def save_checkpoint_fsdp(cfg, model, rank, optimizer=None, scheduler=None, val_loss=None):
     """Save a FULL (unsharded) checkpoint; only rank 0 writes the file.
 
     ``FSDP.summon_full_params`` + ``model.module.state_dict()`` returns sharded
     tensors with SHARD_GRAD_OP, so the FULL_STATE_DICT API is used instead.
     All ranks must enter the context (it is collective); only rank 0 writes.
     """
-    save_file = os.path.join(cfg.work_dir, 'model', f'iteration_{cfg.iteration}.pth')
+    save_file = checkpoint_file(cfg)
     full_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_cfg):
         model_state = model.state_dict()
         optim_state = FSDP.optim_state_dict(model, optimizer) if optimizer is not None else None
         sched_state = scheduler.state_dict() if scheduler is not None else None
     if rank == 0:
-        payload = {'model': model_state, 'iteration': {'iteration': cfg.iteration}}
+        payload = {'model': model_state, 'iteration': {'iteration': cfg.iteration},
+                   'val_loss': val_loss,
+                   'model_id': model_id(cfg), 'exp_tag': exp_tag(cfg),
+                   'arch_tag': arch_tag(cfg),
+                   'zero_obs': bool(getattr(cfg, 'zero_obs', False))}
         if optim_state is not None:
             payload['optimizer'] = optim_state
         if sched_state is not None:
@@ -249,20 +295,17 @@ def make_loaders(cfg, world_size, rank):
     return train_loader, val_loader, test_loader
 
 
-def main(rank, configs, master_port, world_size):
-    cfg = init_dist(rank, configs, master_port, world_size)
+def main(rank, configs, master_port, world_size, overrides=None):
+    cfg = init_dist(rank, configs, master_port, world_size, overrides)
     cfg.amp = bool(getattr(cfg, 'amp', True))
 
     train_loader, val_loader, test_loader = make_loaders(cfg, world_size, rank)
-    cfg.logger.info('{:#^75}'.format('Data Information'))
-    cfg.logger.info(f'[Train]: {len(train_loader.dataset)} samples, '
-                    f'{len(train_loader)} batches, batch_size={cfg.batch_size}')
-    cfg.logger.info(f'[Val]: {len(val_loader.dataset)} samples, '
-                    f'{len(val_loader)} batches')
-    if test_loader is not None:
-        cfg.logger.info(f'[Test]: {len(test_loader.dataset)} samples, '
-                        f'{len(test_loader)} batches')
-    cfg.logger.info('{:#^75}'.format('Data Information'))
+    if rank == 0:
+        sizes = f'train={len(train_loader.dataset)} val={len(val_loader.dataset)}'
+        if test_loader is not None:
+            sizes += f' test={len(test_loader.dataset)}'
+        cfg.logger.info(f'[Data] {sizes} samples/rank, batch_size={cfg.batch_size}, '
+                        f'world_size={world_size}')
 
     model = AssimilationNetv6(bg_chans=cfg.model_bg_chans,
                               obs_chans=cfg.model_obs_chans,
@@ -270,7 +313,8 @@ def main(rank, configs, master_port, world_size):
                               out_chans=cfg.model_out_chans,
                               embed_dim=cfg.model_embed_dim,
                               depth=cfg.model_depth).cuda(rank)
-    cfg.logger.info(f'[Model Parameters]: {get_parameter_number(model)}')
+    if rank == 0:
+        cfg.logger.info(f'[Model Parameters]: {get_parameter_number(model)}')
 
     if cfg.amp:
         mp_precision = MixedPrecision(param_dtype=torch.float16,
@@ -295,7 +339,8 @@ def main(rank, configs, master_port, world_size):
             T_max=t_max if cfg.scheduler == 'CosineAnnealingLR' else None)
         warmup_scheduler = WarmupScheduler(optimizer=optimizer, start_lr=cfg.start_lr,
                                            stop_lr=cfg.stop_lr, warmup_steps=warmup_steps)
-        cfg.logger.info(f'[Warm Up]: {warmup_steps} ||| [T Max]: {t_max}')
+        if rank == 0:
+            cfg.logger.info(f'[Schedule] warmup={warmup_steps} steps, cosine T_max={t_max}')
     else:
         optimizer, scheduler = build_optimizer(
             opt_type=cfg.opt_type, learning_rate=cfg.learning_rate,
@@ -309,64 +354,142 @@ def main(rank, configs, master_port, world_size):
         model, optimizer, scheduler, iteration = load_checkpoint(
             cfg.resume_model, model, optimizer, scheduler)
         start_iteration = iteration or 0
-        cfg.logger.info(f'[Resume]: {cfg.resume_model}')
+        if rank == 0:
+            cfg.logger.info(f'[Resume]: {cfg.resume_model}')
     elif getattr(cfg, 'pre_model', None) is not None:
         model, _, _, _ = load_checkpoint(cfg.pre_model, model)
         start_iteration = getattr(cfg, 'start_iteration', 0)
-        cfg.logger.info(f'[Pre Model]: {cfg.pre_model}')
+        if rank == 0:
+            cfg.logger.info(f'[Pre Model]: {cfg.pre_model}')
 
     cfg.lr, cfg.loss_train, cfg.loss_val = [], [], []
+    cfg.iter_loss = []                              # per-batch losses (rank 0)
     cfg.iteration = start_iteration
+    best_val, best_iter, best_epoch = float('inf'), None, None
 
     for epoch in range(cfg.num_epochs):
+        cfg.epoch = epoch
         model, loss_train = train_one_epoch(cfg, model, rank, train_loader,
                                             optimizer, grad_scaler,
                                             warmup_scheduler, scheduler)
-        save_checkpoint_fsdp(cfg, model, rank, optimizer, scheduler)
-
         loss_val = evaluate(cfg, model, rank, val_loader)
         cfg.loss_train.append(loss_train)
         cfg.loss_val.append(loss_val)
+
+        # Only the best-val model is kept on disk.  Every rank evaluates the
+        # same (all-reduced) val loss, and ``state_dict_type`` is collective,
+        # so all ranks enter the saving context together.
+        if loss_val < best_val - float(getattr(cfg, 'min_delta', 0.0)):
+            best_val, best_iter, best_epoch = loss_val, cfg.iteration, epoch + 1
+            save_checkpoint_fsdp(cfg, model, rank, optimizer, scheduler, loss_val)
+            if rank == 0:
+                cfg.logger.info(f'[Best] val={loss_val:.4f} @ epoch {epoch + 1} '
+                                f'(iter {cfg.iteration}) -> saved')
+        elif rank == 0:
+            cfg.logger.info(f'[Best] val={loss_val:.4f} @ epoch {epoch + 1} '
+                            f'-- keeping the earlier best {best_val:.4f}')
 
         if getattr(cfg, 'early_stop', None) is not None:
             if not hasattr(cfg, 'early_stopper'):
                 cfg.early_stopper = EarlyStopping(**cfg.early_stop)
             cfg.early_stopper(loss_val)
             if cfg.early_stopper.early_stop:
-                cfg.logger.info(f'[Early Stop] at epoch {epoch + 1}, '
-                                f'best val {cfg.early_stopper.best_loss:.4f}')
+                if rank == 0:
+                    cfg.logger.info(f'[Early Stop] at epoch {epoch + 1}, '
+                                    f'best val {cfg.early_stopper.best_loss:.4f}')
                 break
 
         if cfg.iteration >= cfg.num_iteration:
             break
 
+    # Evaluate the *best* model, not whatever the last epoch left behind.
+    ckpt = checkpoint_file(cfg)
+    if best_iter is not None and os.path.exists(ckpt):
+        if rank == 0:
+            cfg.logger.info(f'[Restore] val-best checkpoint '
+                            f'(val={best_val:.4f} @ iter {best_iter})')
+        model, _, _, _ = load_checkpoint(ckpt, model)
+
     # NOTE: evaluate() calls dist.all_reduce internally, so *every* rank must
     # run it -- only logging/saving is gated on rank 0.
     bg_train = evaluate(cfg, model, rank, train_loader, get_fcst_loss=True)
     bg_val = evaluate(cfg, model, rank, val_loader, get_fcst_loss=True)
+    result = {
+        'model_id': model_id(cfg), 'exp_tag': exp_tag(cfg), 'arch_tag': arch_tag(cfg),
+        'configs': configs, 'world_size': world_size,
+        'train_samples': len(train_loader.dataset), 'val_samples': len(val_loader.dataset),
+        'num_iteration': cfg.num_iteration, 'batch_size': cfg.batch_size,
+        'obs_frames': cfg.obs_frames, 'training_tp': getattr(cfg, 'tp_label_source', 'imerg'),
+        'zero_obs': bool(getattr(cfg, 'zero_obs', False)),
+        'best_val_loss': best_val, 'best_iteration': best_iter, 'best_epoch': best_epoch,
+        'train_loss': cfg.loss_train, 'val_loss': cfg.loss_val,
+        'background_only_train': bg_train, 'background_only_val': bg_val,
+        'checkpoint': ckpt, 'log': log_file(cfg),
+    }
     if rank == 0:
         cfg.logger.info(f'[Background-only loss] train={bg_train:.4f} val={bg_val:.4f}')
-        cfg.logger.info(f'[All Train loss]: {cfg.loss_train}')
-        cfg.logger.info(f'[All Val loss]: {cfg.loss_val}')
-        np.save(f'{cfg.work_dir}/train_loss.npy', np.array(cfg.loss_train))
-        np.save(f'{cfg.work_dir}/val_loss.npy', np.array(cfg.loss_val))
-        np.save(f'{cfg.work_dir}/lr.npy', np.array(cfg.lr))
+        np.save(os.path.join(experiment_dir(cfg), 'train_loss.npy'), np.array(cfg.loss_train))
+        np.save(os.path.join(experiment_dir(cfg), 'val_loss.npy'), np.array(cfg.loss_val))
+        np.save(os.path.join(experiment_dir(cfg), 'lr.npy'), np.array(cfg.lr))
+        if cfg.iter_loss:
+            np.save(os.path.join(experiment_dir(cfg), 'iter_loss.npy'),
+                    np.array(cfg.iter_loss, dtype=np.float32))
 
     if test_loader is not None:
         loss_test = evaluate(cfg, model, rank, test_loader, get_fcst_loss=True)
         loss_test_model = evaluate(cfg, model, rank, test_loader)
+        result['test_samples'] = len(test_loader.dataset)
+        result['test_model_loss'] = loss_test_model
+        result['test_background_loss'] = loss_test
         if rank == 0:
-            cfg.logger.info(f'[Test] model={loss_test_model:.4f} background={loss_test:.4f}')
+            cfg.logger.info(f'[Test] model={loss_test_model:.4f} background={loss_test:.4f} '
+                            f'(NOTE: model includes tp, background does not -- '
+                            f'use plot_results.py for the 69-channel comparison)')
+
+    if rank == 0:
+        with open(os.path.join(experiment_dir(cfg), 'summary.json'), 'w') as fh:
+            json.dump(result, fh, indent=2, default=float)
+        cfg.logger.info(f'[Done] results -> {experiment_dir(cfg)}')
 
     dist.barrier()
     dist.destroy_process_group()
+
+
+def _coerce(value):
+    """CLI string -> bool / int / float / plain string."""
+    low = value.lower()
+    if low in ('true', 'yes', 'on'):
+        return True
+    if low in ('false', 'no', 'off'):
+        return False
+    for cast in (int, float):
+        try:
+            return cast(value)
+        except ValueError:
+            pass
+    return value
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--configs', type=str, default='configs')
     parser.add_argument('--master_port', type=str, default='22346')
+    parser.add_argument('--model_id', type=str, default=None,
+                        help='run prefix; configs.model_id by default')
+    parser.add_argument('--exp_tag', type=str, default=None,
+                        help='实验配置 tag; auto-derived from the setup by default')
+    parser.add_argument('--arch_tag', type=str, default=None,
+                        help='模型配置 tag; auto-derived from the network by default')
+    parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                        help='override any configs.py knob, e.g. --set zero_obs=true')
     args = parser.parse_args()
     world_size = max(torch.cuda.device_count(), 1)
-    mp.spawn(main, args=(args.configs, args.master_port, world_size),
+    overrides = {'model_id': args.model_id, 'exp_tag': args.exp_tag,
+                 'arch_tag': args.arch_tag}
+    for item in args.set:
+        if '=' not in item:
+            parser.error(f'--set expects KEY=VALUE, got {item!r}')
+        key, value = item.split('=', 1)
+        overrides[key.strip()] = _coerce(value.strip())
+    mp.spawn(main, args=(args.configs, args.master_port, world_size, overrides),
              nprocs=world_size, join=True)
