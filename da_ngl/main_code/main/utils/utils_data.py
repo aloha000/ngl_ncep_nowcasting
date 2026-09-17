@@ -27,6 +27,8 @@ import zarr
 from torch.utils.data import DataLoader, Dataset, SequentialSampler, SubsetRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
+from .utils import bg_chans, obs_debias_grid
+
 __all__ = ["AssimilationDataset", "build_dataloader", "decode_axis"]
 
 
@@ -77,6 +79,8 @@ class AssimilationDataset(Dataset):
             raise ValueError(f"unknown tp_label_source {self.tp_source!r}")
         self.tp_index = 70 if self.tp_source == "era5" else 69
         self.bg_path = str(cfg.fuxi_zarr)
+        # 69 state channels, +1 when FuXi's own tp is used as a tp background
+        self.bg_n_chans = int(bg_chans(cfg))
         self.obs_path = str(cfg.ngl_zarr)
         self.label_path = str(cfg.label_zarr)
 
@@ -106,6 +110,19 @@ class AssimilationDataset(Dataset):
                 raise FileNotFoundError(
                     f"obs_mode={self.obs_mode!r} needs {self.res_path}; build it "
                     f"with preprocessing/build_ztd_fuxi_zarr.py")
+        # per-station static bias of the innovation (HANDOFF 11.8 item 2).  The
+        # bias is subtracted on the *observation* side, i.e. the network sees
+        # ``(obs - b_s) - H(bg)``; off-station cells carry 0 and stay NaN.
+        self.debias_grid = None
+        if bool(getattr(cfg, "obs_debias", False)):
+            if self.obs_mode == "absolute":
+                raise ValueError(
+                    "obs_debias=True only changes the innovation, but "
+                    "obs_mode='absolute'; use 'residual' or 'both'")
+            self.debias_grid = obs_debias_grid(cfg)
+            _n = int((self.debias_grid != 0).sum())
+            print(f"[Dataset] innovation de-biased per station: {_n} cells, "
+                  f"mean |b| = {float(np.abs(self.debias_grid).sum()) / max(_n, 1):.2f} mm")
         self.obs_end_offset = pd.Timedelta(minutes=int(getattr(cfg, "obs_end_offset_minutes", 0)))
 
         # Background (FuXi) convention, mirroring the reference ``read_bg``:
@@ -120,8 +137,16 @@ class AssimilationDataset(Dataset):
                 f"{self.bg_path} has no lead of {self.lead_hours} h "
                 f"(step axis = {steps.tolist()}); rebuild it or change fcst_step")
         self.lead_index = int(np.where(steps == self.lead_hours)[0][0])
+        n_bg_store = int(zarr.open(self.bg_path, "r")["z"].shape[2])
+        if self.bg_n_chans > n_bg_store:
+            raise ValueError(
+                f"include_fuxi_tp=True needs a background store with "
+                f"{self.bg_n_chans} channels, but {self.bg_path} has {n_bg_store}; "
+                f"rebuild it with preprocessing/build_fuxi_zarr.py --with-tp")
         print(f"[Dataset] bg: init = T - {self.lead_hours}h, step = {self.lead_hours}h "
               f"(fcst_step={self.fcst_step}, zarr step axis {steps.tolist()})")
+        print(f"[Dataset] background channels = {self.bg_n_chans} "
+              f"(FuXi tp {'included' if self.bg_n_chans > 69 else 'dropped'})")
 
         start = pd.to_datetime(str(dates_range[0]), format="%Y%m%d%H")
         end = pd.to_datetime(str(dates_range[1]), format="%Y%m%d%H")
@@ -195,8 +220,8 @@ class AssimilationDataset(Dataset):
         lb_i, bg_i, obs_i = self.samples[idx]
         bg_store, obs_store, label_store, res_store = self._store()
 
-        bg = np.asarray(bg_store["z"][bg_i, self.lead_index],
-                        dtype=np.float32)[None]                         # (1, 69, H, W)
+        bg = np.asarray(bg_store["z"][bg_i, self.lead_index, :self.bg_n_chans],
+                        dtype=np.float32)[None]                         # (1, C, H, W)
         ztd = np.asarray(obs_store["ztd"][obs_i:obs_i + self.obs_frames],
                          dtype=np.float32)                              # (F, H, W) std.
         full = np.asarray(label_store["label"][lb_i], dtype=np.float32)   # (71, H, W)
@@ -208,6 +233,9 @@ class AssimilationDataset(Dataset):
             z_mean = float(obs_store["ztd_train_mean"][0])
             z_std = float(obs_store["ztd_train_std"][0])
             fuxi_mm = np.asarray(res_store["ztd_fuxi"][lb_i], dtype=np.float32)
+            if self.debias_grid is not None:
+                # obs' = obs - b_s  <=>  innovation = obs - (H(bg) + b_s)
+                fuxi_mm = fuxi_mm + self.debias_grid
             innovation = (ztd * np.float32(z_std) + np.float32(z_mean)
                           - fuxi_mm[None]) / np.float32(self.res_scale_mm)
             obs = (np.concatenate([ztd[:, None], innovation[:, None]], axis=1)

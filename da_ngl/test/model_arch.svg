@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1560" viewBox="0 0 1560 1560">
+<defs>
+<marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+<path d="M0,0 L7,3 L0,6 z" fill="#374151"/></marker>
+<marker id="ahd" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+<path d="M0,0 L7,3 L0,6 z" fill="#7c3aed"/></marker>
+</defs>
+<rect width="1560" height="1560" fill="white"/>
+<line x1="350" y1="186" x2="350" y2="236" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="1210" y1="186" x2="1210" y2="236" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="350" y1="322" x2="640" y2="372" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="1210" y1="322" x2="920" y2="372" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="438" x2="780" y2="480" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="580" x2="780" y2="620" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="708" x2="780" y2="748" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="836" x2="780" y2="876" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="942" x2="780" y2="982" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="1070" x2="780" y2="1110" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="1202" x2="780" y2="1242" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="780" y1="1318" x2="780" y2="1358" stroke="#374151" stroke-width="2" marker-end="url(#ah)"/>
+<line x1="420" y1="530" x2="382" y2="530" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+<line x1="1140" y1="530" x2="1228" y2="530" stroke="#7c3aed" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ahd)"/>
+<rect x="90" y="100" width="520" height="86" rx="9" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+<text x="350.0" y="126" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">背景场 bg</text>
+<text x="104" y="150" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">(B, 1, 69, 80, 120)  ← FuXi 预报（lead 6 h / 24 h）</text>
+<text x="104" y="174" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">已用 ERA5 的 mean/std 标准化</text>
+<rect x="950" y="100" width="520" height="86" rx="9" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+<text x="1210.0" y="126" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">观测 obs</text>
+<text x="964" y="150" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">(B, 73, 4, 80, 120)  ← NGL GNSS ZTD</text>
+<text x="964" y="174" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">73 帧 × 5 min；通道 = ZTD + 有效掩码 + lat + lon</text>
+<rect x="90" y="236" width="520" height="86" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="350.0" y="262" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">空间填充</text>
+<text x="104" y="286" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">replicate pad：120 → 128（H、W 需能被 16 整除）</text>
+<text x="104" y="310" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">网络输出最后再裁回 80 × 120</text>
+<rect x="950" y="236" width="520" height="86" rx="9" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+<text x="1210.0" y="262" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">观测重排</text>
+<text x="964" y="286" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">obs 的 73 帧 × 4 通道展平为 292 通道</text>
+<text x="964" y="310" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">站外格点已乘掩码置 0</text>
+<rect x="420" y="372" width="720" height="66" rx="9" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+<text x="780.0" y="398" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">侧信息拼接 side_info = concat([bg, obs])</text>
+<text x="434" y="422" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">(B, 361, 80, 128)   361 = 69（背景）+ 292（观测）</text>
+<rect x="420" y="480" width="720" height="100" rx="9" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="780.0" y="506" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">① AssimilationBlock 0</text>
+<text x="434" y="530" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">背景 / 观测 / 侧信息 三路编码 → FussionStackv2 ×2（两次 FussionNetv2）</text>
+<text x="434" y="554" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">69 / 292 / 361 → 128 通道，空间下采样 ×2  →  H/2</text>
+<rect x="420" y="620" width="720" height="88" rx="9" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="780.0" y="646" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">② AssimilationBlock 1</text>
+<text x="434" y="670" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">同上，但通道翻倍：128 → 256 通道，空间再下采样 ×2  →  H/4</text>
+<rect x="420" y="748" width="720" height="88" rx="9" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="780.0" y="774" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">③ AssimilationBlock 2</text>
+<text x="434" y="798" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">改用 DecoderBlock：256 → 128 通道，空间上采样 ×2  →  H/2</text>
+<rect x="420" y="876" width="720" height="66" rx="9" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+<text x="780.0" y="902" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">跳连拼接   concat([bg0, bg2])</text>
+<text x="434" y="926" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">(B, 256, H/2)   bg0 来自 ①，bg2 来自 ③</text>
+<rect x="420" y="982" width="720" height="88" rx="9" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="780.0" y="1008" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">输出解码器 DecoderBlock</text>
+<text x="434" y="1032" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">256 → 128 → 70 通道，PixelShuffle 上采样 ×2  →  回到 H × W</text>
+<text x="434" y="1056" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">得到 (B, 1, 70, 80, 128)</text>
+<rect x="420" y="1110" width="720" height="92" rx="9" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+<text x="780.0" y="1136" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">残差相加   out = decoder(...) + 背景</text>
+<text x="434" y="1160" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">只加在前 bg_chans 个通道：69 通道配置 → tp(第 69 通道) 没有背景；</text>
+<text x="434" y="1184" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">开启 include_fuxi_tp（70 通道背景）→ tp 以 FuXi 的 tp 为背景</text>
+<rect x="420" y="1242" width="720" height="76" rx="9" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="780.0" y="1268" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">④ EnhanceStack 1 / 2（各带残差：out = enhance(out) + out）</text>
+<text x="434" y="1292" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">两次 U 形增强：先下采样 ×2 再上采样回原尺寸，通道回到 70</text>
+<rect x="420" y="1358" width="720" height="74" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+<text x="780.0" y="1384" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="17.5" font-weight="bold" fill="#111827" text-anchor="middle">输出：ERA5 分析场</text>
+<text x="434" y="1408" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" fill="#1f2937" text-anchor="start">(B, 1, 70, 80, 120)   0–68 = 分析后的 ERA5 状态；69 = tp</text>
+<rect x="60" y="480" width="320" height="288" rx="9" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+<text x="220.0" y="506" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15.5" font-weight="bold" fill="#111827" text-anchor="middle">AssimilationBlock 内部</text>
+<text x="74" y="530" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">三路编码器（各自独立）：</text>
+<text x="74" y="554" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  bg_encoder  : 69 → 128</text>
+<text x="74" y="578" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  obs_encoder : 292 → 128</text>
+<text x="74" y="602" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  side_encoder: 361 → 128</text>
+<text x="74" y="626" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">（都含 stride-2 卷积 + LayerNorm + SiLU）</text>
+<text x="74" y="650" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start"></text>
+<text x="74" y="674" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">三路一起进入 FussionStackv2：</text>
+<text x="74" y="698" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">重复 depth 次 FussionNetv2，</text>
+<text x="74" y="722" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">每次三路都做残差更新：</text>
+<text x="74" y="746" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  bg = bg + out_bg</text>
+<text x="74" y="770" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  obs = obs + out_obs</text>
+<text x="74" y="794" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">  side = out_side（不加残差）</text>
+<rect x="1230" y="480" width="300" height="288" rx="9" fill="#f0f9ff" stroke="#0284c7" stroke-width="2"/>
+<text x="1380.0" y="506" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15.5" font-weight="bold" fill="#111827" text-anchor="middle">FussionNetv2 内部</text>
+<text x="1244" y="530" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">① concat 三路 → 卷积下采样 ×2</text>
+<text x="1244" y="554" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">   (bg+obs+side) → embed_dim</text>
+<text x="1244" y="578" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">② 再下采样 ×2 → 2×embed</text>
+<text x="1244" y="602" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">③ 三条上采样支路各自解码：</text>
+<text x="1244" y="626" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">   up_1(2e → e) → concat 同尺度特征</text>
+<text x="1244" y="650" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">   → up_0(e → 原通道数)</text>
+<text x="1244" y="674" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start"></text>
+<text x="1244" y="698" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">④ 输出：bg / obs 带残差相加，</text>
+<text x="1244" y="722" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">   side 支路不带残差（见左框）</text>
+<rect x="60" y="800" width="320" height="300" rx="9" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+<text x="220.0" y="826" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15.5" font-weight="bold" fill="#111827" text-anchor="middle">空间尺寸与通道账本</text>
+<text x="74" y="850" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">输入          H × W = 80 × 120</text>
+<text x="74" y="874" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">填充后       80 × 128</text>
+<text x="74" y="898" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">① 下采样 ×2   128 通道, H/2</text>
+<text x="74" y="922" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">② 下采样 ×2   256 通道, H/4</text>
+<text x="74" y="946" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">③ 上采样 ×2   128 通道, H/2</text>
+<text x="74" y="970" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">跳连拼接      256 通道, H/2</text>
+<text x="74" y="994" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">解码器 ×2     70 通道, H × W</text>
+<text x="74" y="1018" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">增强 ×2       70 通道, H × W</text>
+<text x="74" y="1042" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">输出裁剪回    80 × 120</text>
+<rect x="1230" y="800" width="300" height="300" rx="9" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+<text x="1380.0" y="826" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15.5" font-weight="bold" fill="#111827" text-anchor="middle">参数量与配置</text>
+<text x="1244" y="850" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">参数量 ~73.7 M</text>
+<text x="1244" y="874" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">embed_dim = 128</text>
+<text x="1244" y="898" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">depth = (2, 2, 2)</text>
+<text x="1244" y="922" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">obs 通道 = 1(绝对ZTD) | 2(+innovation)</text>
+<text x="1244" y="946" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">           + 掩码 + lat/lon = 4 或 5</text>
+<text x="1244" y="970" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">obs 帧数 = 73（6 小时窗口）</text>
+<text x="1244" y="994" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start"></text>
+<text x="1244" y="1018" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">损失：纬度加权 MAE（可选站点加权）</text>
+<text x="1244" y="1042" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="13.5" fill="#1f2937" text-anchor="start">tp 通道 MAE：0.31 → 0.237（加背景后）</text>
+<text x="780.0" y="44" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="24" font-weight="bold" fill="#111827" text-anchor="middle">AssimilationNetv6 结构：FuXi 背景 + GNSS ZTD 观测 → ERA5 分析场</text>
+<text x="780.0" y="70" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" font-weight="normal" fill="#4b5563" text-anchor="middle">残差式同化网络｜每层标注 (通道数, 空间尺寸)｜当前配置 bg_chans=69 或 70、obs=4×73 帧、out_chans=70</text>
+<text x="60" y="1450" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" font-weight="normal" fill="#374151" text-anchor="start">说明：① 背景与观测是两条独立入口，网络只在输出端把背景当作残差基准（因此“分析 = 背景 + 网络修正”）。</text>
+<text x="60" y="1478" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" font-weight="normal" fill="#374151" text-anchor="start">② obs 的每一帧都会被打上逐帧有效掩码；站外格点输入为 0（掩码通道告诉网络那里没有观测）。</text>
+<text x="60" y="1506" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" font-weight="normal" fill="#374151" text-anchor="start">③ tp（第 69 通道）默认没有背景、由网络直接预测；开启 include_fuxi_tp 后 FuXi 的 tp 进入背景，残差覆盖该通道。</text>
+<text x="60" y="1534" font-family="'Noto Sans CJK SC','Source Han Sans SC','Microsoft YaHei','PingFang SC','WenQuanYi Zen Hei',sans-serif" font-size="15" font-weight="normal" fill="#374151" text-anchor="start">④ 所有“残差相加”都是逐元素相加；FussionNetv2 的 side 支路是唯一不加残差的一路。</text>
+</svg>

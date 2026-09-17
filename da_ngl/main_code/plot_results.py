@@ -34,7 +34,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "preprocessing"))   # da_ngl codes (era5 stats)
 
 from main.model import AssimilationNetv6                     # noqa: E402
-from main.utils import AssimilationDataset                   # noqa: E402
+from main.utils import AssimilationDataset, station_cell_mask  # noqa: E402
 from train_FSDP import process_bg, process_obs               # noqa: E402
 from common import (CHANNELS, LABEL_CHANNELS, TRAIN_LABEL_CHANNELS,  # noqa: E402
                     era5_channel_stats)
@@ -126,6 +126,9 @@ def main():
     if "model_obs_chans" not in overridden:
         from main.utils import obs_chans
         cfg.model_obs_chans = obs_chans(cfg)
+    if "model_bg_chans" not in overridden:
+        from main.utils import bg_chans
+        cfg.model_bg_chans = bg_chans(cfg)
 
     work_dir = Path(cfg.work_dir)
     run_dir = Path(experiment_dir(cfg))
@@ -153,6 +156,10 @@ def main():
     wlat = (wlat / wlat.mean()).astype(np.float64)
     # (1, lat, 1): broadcasts against (B, C, H, W)
     w3d = torch.as_tensor(wlat, dtype=torch.float32, device=device).view(1, -1, 1)
+    # station-cell-only metric: the loss may be weighted towards these cells, but
+    # the headline metric stays unweighted so runs remain comparable.
+    st_np = station_cell_mask(cfg)
+    st3d = torch.as_tensor(st_np, dtype=torch.float32, device=device).view(1, 1, *st_np.shape)
 
     mean_era5, std_era5 = era5_channel_stats()
     mean_era5, std_era5 = mean_era5[:70], std_era5[:70]
@@ -164,11 +171,17 @@ def main():
     tp_name = f"{tp_source}_tp"
     tp_other_name = "imerg_tp" if tp_source == "era5" else "era5_tp"
 
+    # Background-side statistics run over n_ch = 70 channels as well: channel 69
+    # is FuXi's own tp when the run was trained with ``include_fuxi_tp``, and a
+    # masked-out NaN channel otherwise (then there is simply no tp background to
+    # compare the analysis against, and the 70-channel numbers come out NaN).
     acc = {
         "model_abs": np.zeros(n_ch), "model_sq": np.zeros(n_ch), "model_bias": np.zeros(n_ch),
-        "bg_abs": np.zeros(n_bg), "bg_sq": np.zeros(n_bg), "bg_bias": np.zeros(n_bg),
-        "clim_abs": np.zeros(n_ch), "delta_abs": np.zeros(n_bg),
-        "wsum": np.zeros(n_ch), "wsum_bg": np.zeros(n_bg),
+        "bg_abs": np.zeros(n_ch), "bg_sq": np.zeros(n_ch), "bg_bias": np.zeros(n_ch),
+        "clim_abs": np.zeros(n_ch), "delta_abs": np.zeros(n_ch),
+        "wsum": np.zeros(n_ch), "wsum_bg": np.zeros(n_ch),
+        "model_abs_st": np.zeros(n_ch), "bg_abs_st": np.zeros(n_ch),
+        "delta_abs_st": np.zeros(n_ch), "wsum_st": np.zeros(n_ch),
     }
     series_model, series_bg, series_true = [], [], []
     series_etp, series_etp_err, series_imerg = [], [], []
@@ -212,6 +225,14 @@ def main():
             bias_m = out - tgt
             bias_b = bg69 - tgt69
 
+            # 70-channel background: FuXi tp when the run carried it, else NaN
+            if int(bg.shape[2]) > n_bg:
+                bg70 = torch.cat([bg69, bg[:, 0, n_bg:n_bg + 1]], dim=1)
+            else:
+                bg70 = torch.cat([bg69, torch.full_like(bg69[:, :1], float("nan"))], dim=1)
+            m_bg_full = m * torch.isfinite(bg70).float()
+            bias_b70 = torch.nan_to_num(bg70) - tgt
+
             acc["model_abs"] += (bias_m.abs() * w * m).sum(dim=(0, 2, 3)).cpu().numpy()
             acc["model_sq"] += (bias_m ** 2 * w * m).sum(dim=(0, 2, 3)).cpu().numpy()
             acc["model_bias"] += (bias_m * w * m).sum(dim=(0, 2, 3)).cpu().numpy()
@@ -220,12 +241,19 @@ def main():
             # climatology baseline: predict the standardised mean (= 0)
             acc["clim_abs"] += (tgt.abs() * w * m).sum(dim=(0, 2, 3)).cpu().numpy()
             # how far the analysis moves away from the background
-            acc["delta_abs"] += ((out[:, :n_bg] - bg69).abs() * w * m69).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["delta_abs"] += ((out - torch.nan_to_num(bg70)).abs() * w * m_bg_full).sum(dim=(0, 2, 3)).cpu().numpy()
 
-            acc["bg_abs"] += (bias_b.abs() * w * m69).sum(dim=(0, 2, 3)).cpu().numpy()
-            acc["bg_sq"] += (bias_b ** 2 * w * m69).sum(dim=(0, 2, 3)).cpu().numpy()
-            acc["bg_bias"] += (bias_b * w * m69).sum(dim=(0, 2, 3)).cpu().numpy()
-            acc["wsum_bg"] += (w * m69).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["bg_abs"] += (bias_b70.abs() * w * m_bg_full).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["bg_sq"] += (bias_b70 ** 2 * w * m_bg_full).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["bg_bias"] += (bias_b70 * w * m_bg_full).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["wsum_bg"] += (w * m_bg_full).sum(dim=(0, 2, 3)).cpu().numpy()
+
+            # same three quantities restricted to the station cells
+            st = st3d
+            acc["model_abs_st"] += (bias_m.abs() * w * m * st).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["bg_abs_st"] += (bias_b70.abs() * w * m_bg_full * st).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["delta_abs_st"] += ((out - torch.nan_to_num(bg70)).abs() * w * m_bg_full * st).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["wsum_st"] += (w * m * st).sum(dim=(0, 2, 3)).cpu().numpy()
 
             # latitude-weighted domain means, per sample
             den_m = (w * m).sum(dim=(2, 3)).clamp_min(1e-6)      # (B, 70)
@@ -272,58 +300,120 @@ def main():
             if bi % 50 == 0:
                 print(f"  batch {bi}/{len(loader)}", flush=True)
 
-    def pad_bg(v):
-        out = np.full(n_ch, np.nan)
-        out[:n_bg] = v
+    def _div(num, den):
+        """num/den, NaN where nothing contributed.
+
+        A 69-channel background carries no tp, so its channel-69 mean must be
+        NaN rather than a silent 0 (which would look like a perfect forecast).
+        """
+        num = np.asarray(num, dtype=np.float64)
+        den = np.asarray(den, dtype=np.float64)
+        out = np.full(num.shape, np.nan)
+        ok = den > 0
+        out[ok] = num[ok] / den[ok]
         return out
 
-    mae_model = acc["model_abs"] / np.maximum(acc["wsum"], 1e-9)
-    rmse_model = np.sqrt(acc["model_sq"] / np.maximum(acc["wsum"], 1e-9))
-    bias_model = acc["model_bias"] / np.maximum(acc["wsum"], 1e-9)
-    mae_clim = acc["clim_abs"] / np.maximum(acc["wsum"], 1e-9)
-    delta = acc["delta_abs"] / np.maximum(acc["wsum_bg"], 1e-9)
-    mae_bg = acc["bg_abs"] / np.maximum(acc["wsum_bg"], 1e-9)
-    rmse_bg = np.sqrt(acc["bg_sq"] / np.maximum(acc["wsum_bg"], 1e-9))
-    bias_bg = acc["bg_bias"] / np.maximum(acc["wsum_bg"], 1e-9)
+    mae_model = _div(acc["model_abs"], acc["wsum"])
+    rmse_model = np.sqrt(_div(acc["model_sq"], acc["wsum"]))
+    bias_model = _div(acc["model_bias"], acc["wsum"])
+    mae_clim = _div(acc["clim_abs"], acc["wsum"])
+    delta = _div(acc["delta_abs"], acc["wsum_bg"])
+    mae_bg = _div(acc["bg_abs"], acc["wsum_bg"])
+    rmse_bg = np.sqrt(_div(acc["bg_sq"], acc["wsum_bg"]))
+    bias_bg = _div(acc["bg_bias"], acc["wsum_bg"])
+    mae_model_st = _div(acc["model_abs_st"], acc["wsum_st"])
+    mae_bg_st = _div(acc["bg_abs_st"], acc["wsum_st"])
+    delta_st = _div(acc["delta_abs_st"], acc["wsum_st"])
+
+    # channel 69 of the *model* is the tp it was trained on (state 0..68 + tp);
+    # channel 69 of the *background* is FuXi tp when the run used include_fuxi_tp
+    bg_has_tp = bool(np.isfinite(mae_bg[69]))
+    tp_names = list(TRAIN_LABEL_CHANNELS[:-1]) + [tp_name]
 
     # physical units: the stores are standardised with mean_era5 / std_era5
+    # (tp lives in the log1p space, so its physical column stays in that space)
     mae_model_phys = mae_model * std_era5
-    mae_bg_phys = pad_bg(mae_bg * std_era5[:n_bg])
-    # tp is log1p-standardised: report the difference in the log space (mm is non-linear)
+    mae_bg_phys = mae_bg * std_era5
     df = pd.DataFrame({
-        "channel": list(TRAIN_LABEL_CHANNELS[:-1]) + [tp_name],
+        "channel": tp_names,
         "mae_analysis_std": mae_model,
-        "mae_bg_std": pad_bg(mae_bg),
+        "mae_bg_std": mae_bg,
         "rmse_analysis_std": rmse_model,
-        "rmse_bg_std": pad_bg(rmse_bg),
+        "rmse_bg_std": rmse_bg,
         "bias_analysis_std": bias_model,
-        "bias_bg_std": pad_bg(bias_bg),
+        "bias_bg_std": bias_bg,
         "std_era5": std_era5,
         "mae_climatology_std": mae_clim,
-        "mean_abs_analysis_minus_bg": pad_bg(delta),
+        "mean_abs_analysis_minus_bg": delta,
         "mae_analysis_phys": mae_model_phys,
         "mae_bg_phys": mae_bg_phys,
-        "improve_pct": 100.0 * (mae_bg.mean() - mae_model[:n_bg].mean()) / mae_bg.mean(),
+        "improve_pct": 100.0 * (mae_bg - mae_model) / mae_bg,
     })
     df.to_csv(out_dir / "metrics.csv", index=False)
+
+    # Same table restricted to the 1378 station cells.  The headline station
+    # number in metrics.json says *whether* the analysis helped where the GNSS
+    # observations are; this says *which* channels it helped, which is what
+    # shows up the operator's cheap levers (e.g. msl feeding ZHD).
+    df_st = pd.DataFrame({
+        "channel": tp_names,
+        "mae_analysis_std_station": mae_model_st,
+        "mae_bg_std_station": mae_bg_st,
+        "mae_analysis_phys_station": mae_model_st * std_era5,
+        "mae_bg_phys_station": mae_bg_st * std_era5,
+        "mean_abs_analysis_minus_bg_station": delta_st,
+        "improve_pct_station": 100.0 * (mae_bg_st - mae_model_st) / mae_bg_st,
+    })
+    df_st.to_csv(out_dir / "metrics_station.csv", index=False)
+
+    def _pct(bg, an):
+        return float(100.0 * (bg - an) / bg)
 
     summary = {
         "checkpoint": str(ckpt), "iteration": iteration, "split": args.split,
         "n_samples": len(dataset),
         "zero_obs": bool(getattr(cfg, "zero_obs", False)),
+        "include_fuxi_tp": bool(getattr(cfg, "include_fuxi_tp", False)),
+        "obs_mode": str(getattr(cfg, "obs_mode", "absolute")),
+        "lambda_obs": float(getattr(cfg, "lambda_obs", 0.0) or 0.0),
+        "obs_debias": bool(getattr(cfg, "obs_debias", False)),
+        "obs_freeze_zhd": bool(getattr(cfg, "obs_freeze_zhd", False)),
+        # ---- 69 state channels -------------------------------------------------
         "mae_analysis_std_69ch": float(mae_model[:n_bg].mean()),
-        "mae_bg_std_69ch": float(mae_bg.mean()),
-        "improve_pct_69ch": float(100 * (mae_bg.mean() - mae_model[:n_bg].mean()) / mae_bg.mean()),
+        "mae_bg_std_69ch": float(mae_bg[:n_bg].mean()),
+        "improve_pct_69ch": _pct(mae_bg[:n_bg].mean(), mae_model[:n_bg].mean()),
+        "n_channels_better": int((mae_model[:n_bg] < mae_bg[:n_bg]).sum()),
+        "mae_climatology_std_69ch": float(mae_clim[:n_bg].mean()),
+        "mean_abs_analysis_minus_bg_69ch": float(delta[:n_bg].mean()),
+        # ---- 69 state channels + tp (the full model I/O) -----------------------
+        "bg_has_fuxi_tp": bg_has_tp,
         "mae_analysis_std_70ch": float(mae_model.mean()),
+        "mae_bg_std_70ch": float(mae_bg.mean()),
+        "improve_pct_70ch": _pct(mae_bg.mean(), mae_model.mean()),
+        "n_channels_better_70ch": int((mae_model < mae_bg).sum()),
+        "mean_abs_analysis_minus_bg_70ch": float(delta.mean()),
         "tp_label_source": tp_source,
         "mae_tp_std": float(mae_model[69]),          # vs the training tp
-        "mae_era5tp_vs_imerg_std": etp_stats["vs_imerg"] / max(etp_stats["n"], 1.0),
+        # these three are accumulated as sums over the valid tp pixels, so they
+        # need the pixel count -- without it they come out ~1e6 too large
         "mae_modeltp_vs_era5tp_std": etp_stats["model_vs_etp"] / max(etp_stats["n"], 1.0),
         "mae_modeltp_vs_imergtp_std": etp_stats["model_vs_imerg"] / max(etp_stats["n"], 1.0),
-        "n_channels_better": int((mae_model[:n_bg] < mae_bg).sum()),
-        "mae_climatology_std_69ch": float(mae_clim[:n_bg].mean()),
-        "mean_abs_analysis_minus_bg_69ch": float(delta.mean()),
+        "mae_era5tp_vs_imerg_std": etp_stats["vs_imerg"] / max(etp_stats["n"], 1.0),
+        "mae_bg_tp_vs_target_std": float(mae_bg[69]),   # FuXi tp vs the target tp
         "mae_tp_climatology_std": float(mae_clim[69]),
+        # ---- the same two views on the 1378 station cells ---------------------
+        "n_station_cells": int(st_np.sum()),
+        "mae_analysis_std_69ch_station": float(mae_model_st[:n_bg].mean()),
+        "mae_bg_std_69ch_station": float(mae_bg_st[:n_bg].mean()),
+        "improve_pct_69ch_station": _pct(mae_bg_st[:n_bg].mean(),
+                                         mae_model_st[:n_bg].mean()),
+        "n_channels_better_station": int((mae_model_st[:n_bg] < mae_bg_st[:n_bg]).sum()),
+        "mean_abs_analysis_minus_bg_69ch_station": float(delta_st[:n_bg].mean()),
+        "mae_analysis_std_70ch_station": float(mae_model_st.mean()),
+        "mae_bg_std_70ch_station": float(mae_bg_st.mean()),
+        "improve_pct_70ch_station": _pct(mae_bg_st.mean(), mae_model_st.mean()),
+        "n_channels_better_70ch_station": int((mae_model_st < mae_bg_st).sum()),
+        "mean_abs_analysis_minus_bg_70ch_station": float(delta_st.mean()),
     }
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
@@ -338,8 +428,15 @@ def main():
     ep = np.arange(1, len(tr) + 1)
     ax[0].plot(ep, tr, "-o", ms=3, label="train")
     ax[0].plot(ep, va, "-s", ms=3, label="val")
-    bg_tr = 0.0938
-    ax[0].axhline(bg_tr, ls="--", c="0.4", lw=1, label=f"background (logged, 69ch)={bg_tr:.4f}")
+    # background-only loss of the same run, read from its summary (the training
+    # script writes it before this evaluation runs); the old hard-coded 0.0938
+    # was the 6 h lead background and is simply wrong for a 24 h run
+    try:
+        bg_tr = float(json.loads((out_dir / "summary.json").read_text())["background_only_train"])
+        ax[0].axhline(bg_tr, ls="--", c="0.4", lw=1,
+                      label=f"background, logged={bg_tr:.4f}")
+    except Exception:
+        bg_tr = None
     ax[0].set_xlabel("epoch"); ax[0].set_ylabel("MAE (standardised)")
     ax[0].set_title("loss"); ax[0].legend(fontsize=8); ax[0].grid(alpha=.3)
     ax[1].plot(np.arange(1, len(lr) + 1), lr)
@@ -348,15 +445,16 @@ def main():
     fig.tight_layout(); fig.savefig(out_dir / "loss_curve.png"); plt.close(fig)
 
     # per-channel MAE
-    order = np.argsort(-mae_bg)
+    bg69_mae = mae_bg[:n_bg]                    # this panel stays on the state channels
+    order = np.argsort(-bg69_mae)
     fig, ax = plt.subplots(1, 2, figsize=(15, 5), dpi=130)
     x = np.arange(69)
-    ax[0].bar(x - .2, mae_bg[order], .4, label="background (FuXi)")
+    ax[0].bar(x - .2, bg69_mae[order], .4, label="background (FuXi)")
     ax[0].bar(x + .2, mae_model[:n_bg][order], .4, label="analysis (model)")
     ax[0].set_xticks(x); ax[0].set_xticklabels(np.array(CHANNELS)[order], rotation=90, fontsize=6)
     ax[0].set_ylabel("MAE (standardised)"); ax[0].legend(fontsize=8)
     ax[0].set_title("per-channel MAE, sorted by background error"); ax[0].grid(alpha=.3, axis="y")
-    rel = 100 * (mae_bg - mae_model[:n_bg]) / mae_bg
+    rel = 100 * (bg69_mae - mae_model[:n_bg]) / bg69_mae
     ax[1].bar(x, rel[order], .6,
               color=np.where(rel[order] > 0, "tab:green", "tab:red"))
     ax[1].axhline(0, c="k", lw=.8)

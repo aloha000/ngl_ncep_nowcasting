@@ -1,0 +1,89 @@
+/*  da_ngl training pipeline  -  Graphviz source
+ *  render:  dot -Tpng pipeline_flowchart.dot -o pipeline_flowchart_dot.png
+ *           dot -Tsvg pipeline_flowchart.dot -o pipeline_flowchart_dot.svg
+ *  (graphviz is NOT installed in this container; the PNG next to this file was
+ *   drawn with matplotlib instead - see the description in pipeline_flowchart.md)
+ */
+digraph da_ngl_pipeline {
+  rankdir = TB;
+  graph [fontname="DejaVu Sans", fontsize=13, bgcolor="white",
+         label="da_ngl training pipeline  (GNSS ZTD + FuXi -> ERA5 assimilation)\nblue = data build | green = training | orange = evaluation | grey = optimiser | purple = outputs",
+         labelloc=t, labeljust=c, nodesep=0.35, ranksep=0.5, compound=true];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=10,
+        fillcolor="white", color="#1f2937", penwidth=1.3];
+  edge [fontname="DejaVu Sans", fontsize=9, color="#374151", arrowsize=0.8];
+
+  /* ---------------- data build ---------------- */
+  subgraph cluster_build {
+    label="(1)(2) raw data -> unified grid"; fontsize=11; color="#2563eb"; style="rounded";
+    raw   [label="RAW sources (read-only)\nNGL 5-min ZTD | FuXi 3 stores (step 6..180 h, 720x1440)\nERA5 2017-2025 | IMERG tp | mean_era5/std_era5 | ETOPO2", fillcolor="#dbeafe", color="#2563eb"];
+    grid  [label="target grid 0.25 deg  80x120\nlat 36.50-56.25, lon -5.25-24.50\nnearest neighbour, lon %360 wrap, lat flip", fillcolor="#dbeafe", color="#2563eb"];
+    smap  [label="station grid map\n1378 station cells / 8222 masked (seed 2021)\n+ station heights", fillcolor="#dbeafe", color="#2563eb"];
+    raw -> grid -> smap;
+  }
+
+  /* ---------------- stores ---------------- */
+  subgraph cluster_stores {
+    label="(3) four zarr stores  (preprocessing/build_*.py)"; fontsize=11; color="#2563eb"; style="rounded";
+    ngl   [label="ngl_europe_0p25_5min.zarr\nztd[394272,80,120]  5-min\nstandardised (2333.645 / 119.763 mm)", fillcolor="#dbeafe", color="#2563eb"];
+    fx6   [label="fuxi_europe_0p25.zarr\nz[5476, step=[6], 69, 80, 120]", fillcolor="#dbeafe", color="#2563eb"];
+    fx24  [label="fuxi_europe_0p25_24h.zarr\nz[5484, step=[24], 69, 80, 120]\n--init-pad-hours 24", fillcolor="#dbeafe", color="#2563eb"];
+    ztd   [label="ztd_fuxi_europe_0p25_6h.zarr  (optional)\nH(FuXi) station-cell ZHD/ZWD/ZTD [mm]\nvalidated vs NGL: RMSE 14.3 mm", fillcolor="#dbeafe", color="#2563eb", style="rounded,dashed"];
+    lab   [label="label_europe_0p25.zarr\nlabel[5476, 71, 80, 120]\n0-68 ERA5 | 69 IMERG tp | 70 ERA5 tp", fillcolor="#dbeafe", color="#2563eb"];
+    smap -> ngl; smap -> fx6; smap -> lab;
+    fx6 -> fx24 [style=dashed];
+    fx6 -> ztd  [style=dashed, label="obs_mode != absolute"];
+  }
+
+  /* ---------------- sample ---------------- */
+  subgraph cluster_sample {
+    label="(4) sample construction  AssimilationDataset"; fontsize=11; color="#16a34a"; style="rounded";
+    T    [label="analysis time T  (6-hourly)\nbg = FuXi[init = T - fcst_step*6h, step = fcst_step*6h] -> (69,80,120)\nobs = 73 x 5-min NGL frames, window [T-6h, T] -> (73,C,80,120)\nlabel = ERA5 0-68 + tp -> (70,80,120)", fillcolor="#dcfce7", color="#16a34a"];
+    split[label="train 2022-01-01 -> 2024-05-01 (3403)\nval -> 2025-01-01 (980)   test -> 2025-10-01 (1092)", fillcolor="#dcfce7", color="#16a34a"];
+    T -> split;
+  }
+
+  /* ---------------- training ---------------- */
+  subgraph cluster_train {
+    label="(5) training  train_FSDP.py  (FSDP over N GPUs)"; fontsize=11; color="#16a34a"; style="rounded";
+    loader [label="DataLoader\nbatch 2/rank x N GPUs, 8 workers, forkserver", fillcolor="#dcfce7", color="#16a34a"];
+    prep   [label="process_bg: to GPU, pad H/W to a multiple of 16 (120->128), crop back\nprocess_obs: nan_to_num, per-frame mask, [zero_obs], + mask/lat/lon, x mask", fillcolor="#dcfce7", color="#16a34a"];
+    model  [label="AssimilationNetv6\n3 encoders -> FussionStackv2 (2,2,2) -> EnhanceStack -> decoder\nout = decoder + bg on the first 69 channels (tp predicted directly)", fillcolor="#dcfce7", color="#16a34a"];
+    loss   [label="mae(): latitude-weighted, NaN-safe, 70 channels\nNOTE: no station mask yet (station cells = 14% of the weighted loss)", fillcolor="#dcfce7", color="#16a34a"];
+    decA   [label="epoch exhausted\nor iteration >= 20000 ?", shape=diamond, fillcolor="#fef9c3", color="#ca8a04"];
+    upd    [label="loss.backward() -> clip_grad 32 -> GradScaler.step\nAdamW (lr 1e-4, wd 0.1)\nwarmup 1000 -> CosineAnnealing(19000)\nlog 1 line / 100 iters (rank 0)", fillcolor="#f3f4f6", color="#9ca3af"];
+    val    [label="val evaluation (evaluate())\n70-channel loss, dist.all_reduce", fillcolor="#dcfce7", color="#16a34a"];
+    decB   [label="val improved ?", shape=diamond, fillcolor="#fef9c3", color="#ca8a04"];
+    save   [label="save val-best\nFSDP FULL_STATE_DICT (rank 0)\nresults/{model_id}_{exp_tag}/{model_id}_{arch_tag}.pth", fillcolor="#f3f4f6", color="#9ca3af"];
+    decC   [label="reached 20000 iters ?", shape=diamond, fillcolor="#fef9c3", color="#ca8a04"];
+    loader -> prep -> model -> loss -> decA;
+    decA -> upd  [label="  no"];
+    upd  -> loader [style=dashed, label="next batch", constraint=false];
+    decA -> val  [label="  yes"];
+    val  -> decB;
+    decB -> save [label="  yes"];
+    decB -> decC [label="  no (keep old best)"];
+    save -> decC;
+    decC -> loader [style=dashed, label="next epoch", constraint=false];
+  }
+
+  /* ---------------- wrap-up / evaluation ---------------- */
+  subgraph cluster_eval {
+    label="(6) wrap-up, evaluation and plots"; fontsize=11; color="#ea580c"; style="rounded";
+    wrap  [label="reload val-best -> background-only loss (69 ch)\n-> test evaluation -> summary.json", fillcolor="#dcfce7", color="#16a34a"];
+    plot  [label="plot_results.py  (chained by train.sh, single GPU)\nrebuild dataset -> forward -> analysis / background / truth (71 ch)", fillcolor="#ffedd5", color="#ea580c"];
+    figs  [label="metrics: 69-ch & 70-ch MAE, per-channel csv, improve_pct, n_channels_better\nfigures: loss_curve, channel_metrics, maps_*, timeseries(_tp), tp_maps", fillcolor="#ffedd5", color="#ea580c"];
+    out   [label="work_dir/results/{model_id}_{exp_tag}/\nckpt | summary.json | metrics.* | *.npy | *.png\nlog: da_ngl/logs/{model_id}_{arch_tag}.log", fillcolor="#ede9fe", color="#7c3aed"];
+    wrap -> plot -> figs -> out;
+  }
+
+  /* ---------------- cross-cluster flow ---------------- */
+  ngl  -> T;
+  fx6  -> T;
+  fx24 -> T;
+  lab  -> T;
+  ztd  -> T [style=dashed, label="obs_mode != absolute"];
+  split -> loader;
+  decC -> wrap [label="  yes"];
+  decC -> decC [style=invis];
+}

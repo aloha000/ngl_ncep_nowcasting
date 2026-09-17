@@ -16,7 +16,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR, StepLR
 # unified grid: lat 36.50..56.25 (80), lon -5.25..24.50 (120)
 GRID_LAT = np.round(np.arange(36.50, 56.25 + 1e-9, 0.25), 6)
 
-__all__ = ["build_optimizer", "EarlyStopping", "WarmupScheduler", "mae", "mse", "GRID_LAT"]
+__all__ = ["build_optimizer", "EarlyStopping", "WarmupScheduler", "mae", "mse",
+           "ObsConsistencyLoss", "GRID_LAT"]
 
 
 def build_optimizer(opt_type, learning_rate, weight_decay, model, scheduler,
@@ -80,7 +81,13 @@ class WarmupScheduler:
 
 
 class _LatWeightedLoss(nn.Module):
-    """Latitude-weighted (cos lat, mean-normalised) MAE / MSE over all channels."""
+    """Latitude-weighted (cos lat, mean-normalised) MAE / MSE over all channels.
+
+    An optional per-cell weight map (``set_cell_weight``) is multiplied on top of
+    the latitude weight -- used to down-weight the 8222 grid cells that carry no
+    GNSS station, where the background error is unpredictable and the loss only
+    pushes the output back towards the background.
+    """
 
     def __init__(self, lat=None, kind='mae', ignore_nan=True):
         super().__init__()
@@ -88,13 +95,32 @@ class _LatWeightedLoss(nn.Module):
         w = torch.cos(torch.deg2rad(torch.as_tensor(lat, dtype=torch.float32)))
         w = w / w.mean()
         self.register_buffer('wlat', w.view(1, 1, -1, 1))
+        self.register_buffer('cellw', torch.ones(1, 1, 1, 1))
+        self.has_cellw = False
         self.kind = kind
         self.ignore_nan = ignore_nan
+
+    def set_cell_weight(self, weight):
+        """(H, W) array of non-negative cell weights; all ones reproduces the
+        historical behaviour exactly (the buffer is dropped so the maths below is
+        bit-identical to the unweighted case)."""
+        w = np.asarray(weight, dtype=np.float32)
+        if w.ndim != 2:
+            raise ValueError(f'cell weight must be (H, W), got shape {w.shape}')
+        if np.allclose(w, 1.0):
+            self.cellw = torch.ones(1, 1, 1, 1)
+            self.has_cellw = False
+            return self
+        self.cellw = torch.as_tensor(w).view(1, 1, *w.shape)
+        self.has_cellw = True
+        return self
 
     def forward(self, outputs, labels):
         outputs = outputs.float()
         labels = labels.float()
         w = self.wlat.to(outputs.device)
+        if self.has_cellw:
+            w = w * self.cellw.to(outputs.device)
         if self.ignore_nan:
             valid = torch.isfinite(labels)
             # fill the missing labels *before* differencing: NaN * 0 is NaN
@@ -117,3 +143,49 @@ class mae(_LatWeightedLoss):
 class mse(_LatWeightedLoss):
     def __init__(self, lat=None, ignore_nan=True):
         super().__init__(lat, 'mse', ignore_nan)
+
+
+class ObsConsistencyLoss(nn.Module):
+    """Observation-consistency term (HANDOFF 11.8 item 1).
+
+        J_o = lambda * mean_{valid station cells} | H(x_analysis) - obs' | / sigma_o
+
+    ``H`` is the differentiable ZTD observation operator
+    (:class:`main.model.ztd_torch.StationZTD`) applied to the analysis the
+    network emits (optionally with its hydrostatic part frozen at the
+    background, cf. ``obs_freeze_zhd``); ``obs'`` is the observed GNSS ZTD at the valid time ``T``
+    [mm], optionally de-biased per station (item 2).  Everything else in the
+    loss is a regression against ERA5 -- this is the only term that says in
+    *which direction* the analysis should move towards the observations.
+
+    Only cells with a finite observation and a finite ``H`` enter the mean, and
+    the difference is taken on ``nan_to_num`` copies: ``where(valid, x, 0)`` on
+    an already-NaN ``x`` is fine forward but its gradient is ``0 * nan = nan``.
+    """
+
+    def __init__(self, operator, weight=1.0, sigma_o_mm=11.0, bias=None):
+        super().__init__()
+        self.operator = operator
+        self.weight = float(weight)
+        self.sigma_o_mm = float(sigma_o_mm)
+        self.register_buffer('bias', None)          # replaceable buffer, so the
+        if bias is not None:                        # map follows .to(device)
+            self.register_buffer('bias', torch.as_tensor(np.asarray(bias, dtype=np.float32)))
+        self.last_mae_mm = float('nan')
+
+    def forward(self, analysis, obs_mm, background=None):
+        # ``background`` is only needed (and only used) when the operator runs in
+        # the freeze-ZHD mode, see StationZTD
+        ztd = self.operator(analysis.float(),
+                            None if background is None else background.float())
+
+        iy, ix = self.operator.cells
+        target = obs_mm[:, iy, ix].float()                              # (B, n_cell) mm
+        if self.bias is not None:
+            target = target - self.bias
+        valid = torch.isfinite(ztd) & torch.isfinite(target)
+        err = (torch.nan_to_num(ztd) - torch.nan_to_num(target)).abs()
+        err = torch.where(valid, err, torch.zeros_like(err))
+        mae = err.sum() / valid.sum().clamp_min(1)
+        self.last_mae_mm = float(mae.detach())
+        return self.weight * mae / self.sigma_o_mm

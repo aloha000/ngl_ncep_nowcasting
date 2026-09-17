@@ -60,3 +60,413 @@ frame #8: clone + 0x44 (0x7f8f885f3bf4 in /usr/lib/x86_64-linux-gnu/libc.so.6)
 
 /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 48 leaked semaphore objects to clean up at shutdown
   warnings.warn('resource_tracker: There appear to be %d '
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:172: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = OrderedDict(zip(ref.keys(), state.values()))
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:172: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = OrderedDict(zip(ref.keys(), state.values()))
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:172: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = OrderedDict(zip(ref.keys(), state.values()))
+[rank0]:[W915 12:56:34.166060223 ProcessGroupNCCL.cpp:1250] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+W0915 12:56:35.706000 67904 site-packages/torch/multiprocessing/spawn.py:160] Terminating process 67970 via signal SIGTERM
+W0915 12:56:35.707000 67904 site-packages/torch/multiprocessing/spawn.py:160] Terminating process 67972 via signal SIGTERM
+Traceback (most recent call last):
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 494, in <module>
+    help='override any configs.py knob, e.g. --set zero_obs=true')
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 328, in spawn
+    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 284, in start_processes
+    while not context.join():
+              ^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 203, in join
+    raise ProcessRaisedException(msg, error_index, failed_process.pid)
+torch.multiprocessing.spawn.ProcessRaisedException: 
+
+-- Process 1 terminated with the following error:
+Traceback (most recent call last):
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 90, in _wrap
+    fn(i, *args)
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 439, in main
+    np.save(os.path.join(experiment_dir(cfg), 'val_loss.npy'), np.array(cfg.loss_val))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 221, in evaluate
+    ddp_loss = torch.zeros(2).to(rank)
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 701, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
+    return self._process_data(data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
+    data.reraise()
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/_utils.py", line 715, in reraise
+    raise exception
+AttributeError: Caught AttributeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+            ~~~~~~~~~~~~^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils_data.py", line 210, in __getitem__
+    bg = np.asarray(bg_store["z"][bg_i, self.lead_index, :self.bg_n_chans],
+                                                          ^^^^^^^^^^^^^^^
+AttributeError: 'AssimilationDataset' object has no attribute 'bg_n_chans'
+
+
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 72 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 72 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[train.sh] training done -> evaluating the val-best checkpoint (CUDA_VISIBLE_DEVICES=0)
+[eval] run folder /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_lead24h_obs6h_era5tp_bgtp
+[eval] checkpoint /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_lead24h_obs6h_era5tp_bgtp/lead24_with_fuxi_tp_ed128_d222.pth
+[eval] iteration {'iteration': 3408} | split test | device cuda
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 71
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+  batch 0/273
+  batch 50/273
+  batch 100/273
+  batch 150/273
+  batch 200/273
+  batch 250/273
+{
+  "checkpoint": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_lead24h_obs6h_era5tp_bgtp/lead24_with_fuxi_tp_ed128_d222.pth",
+  "iteration": {
+    "iteration": 3408
+  },
+  "split": "test",
+  "n_samples": 1092,
+  "zero_obs": false,
+  "include_fuxi_tp": true,
+  "obs_mode": "absolute",
+  "mae_analysis_std_69ch": 0.1261695890370861,
+  "mae_bg_std_69ch": 0.12607359324387402,
+  "improve_pct_69ch": -0.07614266456767244,
+  "mae_analysis_std_70ch": 0.12775363528410344,
+  "tp_label_source": "era5",
+  "mae_tp_std": 0.23705282632830088,
+  "mae_era5tp_vs_imerg_std": 0.4357796921258738,
+  "mae_modeltp_vs_era5tp_std": 0.23928001700417245,
+  "mae_modeltp_vs_imergtp_std": 0.4374762683957297,
+  "n_channels_better": 33,
+  "mae_climatology_std_69ch": 1.036235497958283,
+  "mean_abs_analysis_minus_bg_69ch": 0.014947087071456684,
+  "mae_tp_climatology_std": 0.8252009560162331
+}
+[done] figures -> /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_lead24h_obs6h_era5tp_bgtp
+[train.sh] evaluation done -> /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_lead24h_obs6h_era5tp_bgtp/
+[train.sh] all done
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+W0915 14:23:28.543000 90396 site-packages/torch/multiprocessing/spawn.py:160] Terminating process 90844 via signal SIGTERM
+W0915 14:23:28.544000 90396 site-packages/torch/multiprocessing/spawn.py:160] Terminating process 90845 via signal SIGTERM
+Traceback (most recent call last):
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 504, in <module>
+    mp.spawn(main, args=(args.configs, args.master_port, world_size, overrides),
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 328, in spawn
+    return start_processes(fn, args, nprocs, join, daemon, start_method="spawn")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 284, in start_processes
+    while not context.join():
+              ^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 203, in join
+    raise ProcessRaisedException(msg, error_index, failed_process.pid)
+torch.multiprocessing.spawn.ProcessRaisedException: 
+
+-- Process 0 terminated with the following error:
+Traceback (most recent call last):
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/multiprocessing/spawn.py", line 90, in _wrap
+    fn(i, *args)
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 304, in main
+    cfg = init_dist(rank, configs, master_port, world_size, overrides)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py", line 62, in init_dist
+    dist.init_process_group(backend='nccl', init_method='env://',
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/c10d_logger.py", line 83, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/c10d_logger.py", line 97, in wrapper
+    func_return = func(*args, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/distributed_c10d.py", line 1520, in init_process_group
+    store, rank, world_size = next(rendezvous_iterator)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/rendezvous.py", line 269, in _env_rendezvous_handler
+    store = _create_c10d_store(
+            ^^^^^^^^^^^^^^^^^^^
+  File "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/rendezvous.py", line 189, in _create_c10d_store
+    return TCPStore(
+           ^^^^^^^^^
+RuntimeError: The server socket has failed to listen on any local network address. port: 22336, useIpv6: 0, code: -98, name: EADDRINUSE, message: address already in use
+
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+[rank0]:[W915 14:25:16.163662507 ProcessGroupNCCL.cpp:1250] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 48 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[train.sh] CUDA_VISIBLE_DEVICES=0,1,2  MASTER_PORT=22336
+[train.sh] torch sees 3 GPU(s)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2022-01-01 00:00:00 ~ 2024-04-30 18:00:00  wanted=3404  usable=3403  (skip bg=0, label=0, obs=1)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2024-05-01 00:00:00 ~ 2024-12-31 18:00:00  wanted=980  usable=980  (skip bg=0, label=0, obs=0)
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 70
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py:690: FutureWarning: FSDP.state_dict_type() and FSDP.set_state_dict_type() are being deprecated. Please use APIs, get_state_dict() and set_state_dict(), which can support different parallelisms, FSDP1, FSDP2, DDP. API doc: https://pytorch.org/docs/stable/distributed.checkpoint.html#torch.distributed.checkpoint.state_dict.get_state_dict .Tutorial: https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html .
+  warnings.warn(
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/main/utils/utils.py:186: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  checkpoint = torch.load(checkpoint_path, map_location='cpu')
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 72 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+[train.sh] training done -> evaluating the val-best checkpoint (CUDA_VISIBLE_DEVICES=0)
+[eval] run folder /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_obs_zero_lead24h_obs6h_era5tp_bgtp_zeroobs
+[eval] checkpoint /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_obs_zero_lead24h_obs6h_era5tp_bgtp_zeroobs/lead24_with_fuxi_tp_obs_zero_ed128_d222.pth
+[eval] iteration {'iteration': 3408} | split test | device cuda
+[Dataset] bg: init = T - 24h, step = 24h (fcst_step=4, zarr step axis [24])
+[Dataset] background channels = 70 (FuXi tp included)
+[Dataset] label channels used = 71
+[Dataset] tp training target = era5 (store channel 70)
+[Dataset] 2025-01-01 00:00:00 ~ 2025-09-30 18:00:00  wanted=1092  usable=1092  (skip bg=0, label=0, obs=0)
+  batch 0/273
+  batch 50/273
+  batch 100/273
+  batch 150/273
+  batch 200/273
+  batch 250/273
+{
+  "checkpoint": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_obs_zero_lead24h_obs6h_era5tp_bgtp_zeroobs/lead24_with_fuxi_tp_obs_zero_ed128_d222.pth",
+  "iteration": {
+    "iteration": 3408
+  },
+  "split": "test",
+  "n_samples": 1092,
+  "zero_obs": true,
+  "include_fuxi_tp": true,
+  "obs_mode": "absolute",
+  "mae_analysis_std_69ch": 0.12617039866234056,
+  "mae_bg_std_69ch": 0.12607359324387402,
+  "improve_pct_69ch": -0.07678484921048158,
+  "mae_analysis_std_70ch": 0.12775440149292283,
+  "tp_label_source": "era5",
+  "mae_tp_std": 0.23705059680309926,
+  "mae_era5tp_vs_imerg_std": 0.4357796921258738,
+  "mae_modeltp_vs_era5tp_std": 0.2392778321514904,
+  "mae_modeltp_vs_imergtp_std": 0.43747296105660566,
+  "n_channels_better": 33,
+  "mae_climatology_std_69ch": 1.036235497958283,
+  "mean_abs_analysis_minus_bg_69ch": 0.014961324132150546,
+  "mae_tp_climatology_std": 0.8252009560162331
+}
+[done] figures -> /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_obs_zero_lead24h_obs6h_era5tp_bgtp_zeroobs
+[train.sh] evaluation done -> /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/lead24_with_fuxi_tp_obs_zero_lead24h_obs6h_era5tp_bgtp_zeroobs/
+[train.sh] all done

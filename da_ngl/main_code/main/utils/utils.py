@@ -50,11 +50,24 @@ def exp_tag(cfg):
     lead = int(getattr(cfg, 'fcst_step', 1)) * 6
     tp = str(getattr(cfg, 'tp_label_source', 'imerg'))
     tag = f'lead{lead}h_obs{minutes // 60}h_{tp}tp'
+    ws = float(getattr(cfg, 'loss_station_weight', 1.0))
+    wn = float(getattr(cfg, 'loss_nostation_weight', 1.0))
+    if (ws, wn) != (1.0, 1.0):
+        tag += f'_w{ws:g}-{wn:g}'
+    if getattr(cfg, 'include_fuxi_tp', False):
+        tag += '_bgtp'
     if getattr(cfg, 'zero_obs', False):
         tag += '_zeroobs'
     mode = str(getattr(cfg, 'obs_mode', 'absolute')).lower()
     if mode != 'absolute':
         tag += f'_{mode}'
+    lam = float(getattr(cfg, 'lambda_obs', 0.0) or 0.0)
+    if lam:
+        tag += f'_oc{lam:g}'
+        if getattr(cfg, 'obs_freeze_zhd', False):
+            tag += '_frzzhd'
+    if getattr(cfg, 'obs_debias', False):
+        tag += '_debias'
     return tag
 
 
@@ -71,6 +84,139 @@ def obs_chans(cfg):
         raise ValueError(f"obs_mode must be absolute|residual|both, got {mode!r}")
     return (head + int(getattr(cfg, 'obs_add_mask', True))
             + 2 * int(getattr(cfg, 'obs_add_latlon', True)))
+
+
+def station_cell_mask(cfg):
+    """(H, W) bool mask, True on the 1378 cells that hold a GNSS station.
+
+    The NGL store's static ``mask`` is True where a cell is *masked out* (no
+    station) -- polarity is checked against the store's ``station`` array so a
+    flipped mask cannot slip through silently.
+    """
+    import numpy as np
+    import zarr
+
+    g = zarr.open(str(cfg.ngl_zarr), 'r')
+    mask = np.asarray(g['mask'][:]).astype(bool)          # True = no station
+    station = np.asarray(g['station'][:])
+    has = np.array([[str(v).strip() not in ('', 'nan', 'None') for v in row]
+                    for row in station])
+    if has.shape != mask.shape or not np.array_equal(has, ~mask):
+        raise ValueError(f'station mask polarity check failed on {cfg.ngl_zarr}')
+    return ~mask
+
+
+def station_cell_weight(cfg):
+    """(H, W) float32 loss weights: ``loss_station_weight`` on station cells,
+    ``loss_nostation_weight`` everywhere else."""
+    import numpy as np
+
+    m = station_cell_mask(cfg)
+    return np.where(m, float(getattr(cfg, 'loss_station_weight', 1.0)),
+                    float(getattr(cfg, 'loss_nostation_weight', 1.0))).astype('float32')
+
+
+def bg_chans(cfg):
+    """Background channels implied by ``cfg.include_fuxi_tp``.
+
+    69 ERA5/FuXi state channels, plus FuXi's own ``tp`` when the switch is on
+    (the store then needs 70 channels, i.e. it must be built with
+    ``build_fuxi_zarr.py --with-tp``).  ``model_bg_chans`` in configs.py is
+    evaluated at import time, before ``--set include_fuxi_tp=true`` is applied,
+    so the dataset and anything building the model must come back through here.
+    """
+    return 69 + int(bool(getattr(cfg, 'include_fuxi_tp', False)))
+
+
+def station_geometry(cfg):
+    """``(iy, ix, height_m, station_id)`` for the station cells, in map order.
+
+    Exactly the construction ``preprocessing/build_ztd_fuxi_zarr.py`` uses: the
+    NGL grid map gives one station per cell, and the height comes from
+    ``ngl_europe_stations.parquet`` (ETOPO is *not* used -- a 100 m height error
+    is already ~12 hPa of surface pressure).  Kept here so the torch ZTD
+    operator, the de-bias builder and the evaluation index the same cells in the
+    same order.
+    """
+    import numpy as np
+    import pandas as pd
+
+    dsit = os.path.dirname(str(cfg.ngl_zarr))
+    grid_map = os.path.join(dsit, 'ngl_europe_0p25_80x120_station_grid_map.parquet')
+    stations = os.path.join(dsit, 'ngl_europe_stations.parquet')
+    mp = pd.read_parquet(grid_map)
+    st = pd.read_parquet(stations)
+    cells = mp[~mp['mask'].astype(bool) & mp['station_id'].notna()].reset_index(drop=True)
+    cells = cells.merge(st[['gnss_station_id', 'height_m']],
+                        left_on='station_id', right_on='gnss_station_id', how='left')
+    lat_axis = np.asarray(cfg.lat, dtype=np.float64)
+    lon_axis = np.asarray(cfg.lon, dtype=np.float64)
+    iy = np.array([int(np.abs(lat_axis - v).argmin()) for v in cells['lat'].values])
+    ix = np.array([int(np.abs(lon_axis - v).argmin()) for v in cells['lon'].values])
+    if (not np.allclose(lat_axis[iy], cells['lat'].values, atol=1e-6)
+            or not np.allclose(lon_axis[ix], cells['lon'].values, atol=1e-6)):
+        raise ValueError(f'{grid_map}: station coordinates are not on the configured grid')
+    height = cells['height_m'].values.astype(np.float64)
+    if not np.isfinite(height).all():
+        raise ValueError(f'{stations}: some station cells have no height_m')
+    if len(set(zip(iy.tolist(), ix.tolist()))) != iy.size:
+        raise ValueError('two stations landed on the same grid cell')
+    return iy, ix, height, cells['station_id'].astype(str).values
+
+
+def obs_debias_path(cfg):
+    """Where the per-station static innovation bias is cached.
+
+    Built by ``preprocessing/build_obs_debias.py``; one file per lead time
+    because ``H(bg)`` -- and therefore the bias -- depends on the lead.
+    """
+    explicit = getattr(cfg, 'obs_debias_file', None)
+    if explicit:
+        return str(explicit)
+    lead = int(getattr(cfg, 'fcst_step', 1)) * 6
+    return os.path.join(os.path.dirname(str(cfg.ngl_zarr)),
+                        f'obs_debias_lead{lead}h.npz')
+
+
+def load_obs_debias(cfg):
+    """``(bias_mm, station_id)`` for this lead, validated against the grid map.
+
+    ``bias_mm`` is the train-split mean of ``obs - H(bg)`` per station [mm];
+    subtracting it removes the 1378 constant offsets the network would otherwise
+    have to learn before it can see the time-varying part of the innovation.
+    """
+    import numpy as np
+
+    path = obs_debias_path(cfg)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f'obs_debias=True needs {path}; build it with '
+            f'preprocessing/build_obs_debias.py using the same --set fcst_step / '
+            f'ztd_fuxi_zarr as the run')
+    data = np.load(path, allow_pickle=False)
+    bias = np.asarray(data['bias_mm'], dtype=np.float32)
+    _, _, _, station_id = station_geometry(cfg)
+    stored = np.asarray(data['station_id']).astype(str)
+    if bias.shape != station_id.shape or not np.array_equal(stored, station_id):
+        raise ValueError(f'{path}: station order does not match the grid map; rebuild it')
+    return bias, station_id
+
+
+def obs_debias_grid(cfg):
+    """``(H, W)`` float32 map of the per-station bias, 0 outside the station cells.
+
+    This is what the dataset adds to ``H(bg)``: ``obs - (H(bg) + b_s)`` is the
+    de-biased innovation (HANDOFF 11.8 item 2).
+    """
+    import numpy as np
+    import zarr
+
+    bias, _ = load_obs_debias(cfg)
+    iy, ix, _, _ = station_geometry(cfg)
+    shape = tuple(int(v) for v in zarr.open(str(cfg.ngl_zarr), 'r')['mask'].shape)
+    grid = np.zeros(shape, dtype=np.float32)
+    grid[iy, ix] = bias
+    return grid
 
 
 def arch_tag(cfg):

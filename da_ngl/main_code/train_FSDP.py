@@ -28,11 +28,13 @@ from torch.distributed.fsdp import (
 )
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
-from main.model import (AssimilationNetv6, EarlyStopping, WarmupScheduler,
-                        build_optimizer, get_parameter_number)
-from main.utils import (build_dataloader, checkpoint_file, create_logger,
-                        experiment_dir, exp_tag, arch_tag, load_checkpoint,
-                        log_file, model_id, obs_chans)
+from main.model import (AssimilationNetv6, EarlyStopping, ObsConsistencyLoss,
+                        StationZTD, WarmupScheduler, build_optimizer,
+                        get_parameter_number)
+from main.utils import (arch_tag, bg_chans, build_dataloader, checkpoint_file,
+                        create_logger, experiment_dir, exp_tag, load_checkpoint,
+                        load_obs_debias, log_file, model_id, obs_chans,
+                        station_cell_weight)
 
 
 def init_dist(rank, configs, master_port, world_size, overrides=None):
@@ -43,6 +45,26 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
     if 'model_obs_chans' not in (overrides or {}):
         # obs_mode may have just been overridden -- keep the channel count in sync
         xconfig.model_obs_chans = obs_chans(xconfig)
+    if 'model_bg_chans' not in (overrides or {}):
+        # include_fuxi_tp may have just been overridden -- keep it in sync too
+        xconfig.model_bg_chans = bg_chans(xconfig)
+    # station weighting of the loss (no-op for the historical 1.0/1.0)
+    loss_note = ''
+    ws = float(getattr(xconfig, 'loss_station_weight', 1.0))
+    wn = float(getattr(xconfig, 'loss_nostation_weight', 1.0))
+    if (ws, wn) != (1.0, 1.0):
+        cw = station_cell_weight(xconfig)
+        xconfig.loss_fn.set_cell_weight(cw)
+        _lat = np.asarray(getattr(xconfig, 'lat', []), dtype=float)
+        if _lat.size:                      # latitude-weighted share of the loss
+            _wl = np.cos(np.deg2rad(_lat))[:, None] * np.ones((1, cw.shape[1]))
+            _st = cw == ws
+            share = float((cw[_st] * _wl[_st]).sum() / (cw * _wl).sum())
+        else:
+            share = float(cw[cw == ws].sum() / cw.sum())
+        loss_note = (f'\n[Loss] cell weights: station={ws:g} no-station={wn:g} '
+                     f'-> station cells hold {100 * share:.1f}% of the loss weight'
+                     f' (was 14.0%)')
 
     if rank == 0:
         os.makedirs(experiment_dir(xconfig), exist_ok=True)
@@ -71,7 +93,7 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
             f'模型配置={arch_tag(xconfig)}\n'
             f'[Results]: {experiment_dir(xconfig)}\n'
             f'[Checkpoint]: {checkpoint_file(xconfig)}\n'
-            f'[Log]: {log_file(xconfig)}')
+            f'[Log]: {log_file(xconfig)}{loss_note}')
     torch.cuda.set_device(rank)
     xconfig.rank = rank
     return xconfig
@@ -126,10 +148,50 @@ def process_obs(obs, cfg, rank):
     return data * mask
 
 
+def obs_at_valid_time(obs_raw, cfg, rank):
+    """(B, H, W) observed GNSS ZTD [mm] at the analysis time ``T``.
+
+    ``obs_raw`` is the dataset's standardised window ``(B, T, 1, H, W)`` with NaN
+    outside the station cells; frame ``-1`` is the valid time because the window
+    is ``[T - (frames-1) * 5 min, T]``.  NaN is preserved so the consistency loss
+    can mask it instead of counting it as a zero error.
+    """
+    z = obs_raw[:, -1, 0].to(rank).float()
+    return z * float(cfg.ztd_train_std) + float(cfg.ztd_train_mean)
+
+
+def build_obs_loss(cfg, rank):
+    """Observation-consistency loss (HANDOFF 11.8 item 1); None when disabled.
+
+    Also loads the NGL train-split mean/std (needed to turn the standardised
+    observation window back into mm) and the per-station de-bias map when
+    ``obs_debias`` is on (item 2).
+    """
+    lam = float(getattr(cfg, 'lambda_obs', 0.0) or 0.0)
+    if lam <= 0:
+        return None
+    import zarr
+
+    gn = zarr.open(str(cfg.ngl_zarr), 'r')
+    cfg.ztd_train_mean = float(np.asarray(gn['ztd_train_mean'][:]).reshape(-1)[0])
+    cfg.ztd_train_std = float(np.asarray(gn['ztd_train_std'][:]).reshape(-1)[0])
+
+    operator = StationZTD(cfg)
+    bias = None
+    if bool(getattr(cfg, 'obs_debias', False)):
+        bias, _ = load_obs_debias(cfg)
+    loss = ObsConsistencyLoss(
+        operator, weight=lam,
+        sigma_o_mm=float(getattr(cfg, 'obs_sigma_o_mm', 11.0)), bias=bias)
+    return loss.to(rank)
+
+
 def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
                     warmup_scheduler=None, scheduler=None):
     model.train()
     ddp_loss = torch.zeros(2).to(rank)
+    ddp_oc = torch.zeros(3).to(rank)          # sum(term), sum(mae mm), count
+    obs_loss = getattr(cfg, 'obs_loss', None)
     hw = getattr(cfg, 'grid_hw', None)
 
     time_start = time.perf_counter()
@@ -145,9 +207,12 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
         optimizer.zero_grad()
         time_data = time.perf_counter()
 
+        obs_raw = batch_obs                      # standardised window, pre-masking
         batch_fcst = process_bg(batch_fcst, rank, hw)
         batch_era5 = process_bg(batch_era5.unsqueeze(1), rank, hw)
         batch_obs = process_obs(batch_obs, cfg, rank)
+        obs_valid = (obs_at_valid_time(obs_raw, cfg, rank)
+                     if obs_loss is not None else None)
 
         if cfg.amp:
             batch_fcst = batch_fcst.half()
@@ -158,6 +223,10 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
         batch_out = model(batch_fcst, batch_obs)
 
         loss = cfg.loss_fn(batch_out, batch_era5)
+        oc = None
+        if obs_loss is not None:
+            oc = obs_loss(batch_out, obs_valid, batch_fcst)
+            loss = loss + oc
         if cfg.amp:
             grad_scaler.scale(loss).backward()
         else:
@@ -171,6 +240,10 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
 
         ddp_loss[0] += loss.item()
         ddp_loss[1] += 1
+        if oc is not None:
+            ddp_oc[0] += float(oc.detach())
+            ddp_oc[1] += float(obs_loss.last_mae_mm)
+            ddp_oc[2] += 1
         cfg.lr.append(optimizer.param_groups[0]['lr'])
 
         batch_loss = float(loss.item())
@@ -207,21 +280,37 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
 
     dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
     epoch_loss = (ddp_loss[0] / ddp_loss[1].clamp_min(1)).item()
+    oc_note = ''
+    if obs_loss is not None:
+        dist.all_reduce(ddp_oc, op=dist.ReduceOp.SUM)
+        oc_note = (f'  [obs-consistency: term={ddp_oc[0] / ddp_oc[2].clamp_min(1):.4f}'
+                   f' |H(xa)-obs|={ddp_oc[1] / ddp_oc[2].clamp_min(1):.2f} mm]')
     if rank == 0:
         cfg.logger.info(f'[Epoch {getattr(cfg, "epoch", 0) + 1}] '
-                        f'train loss={epoch_loss:.4f} (iteration {cfg.iteration})')
+                        f'train loss={epoch_loss:.4f} (iteration {cfg.iteration}){oc_note}')
     return model, epoch_loss
 
 
 def evaluate(cfg, model, rank, dataloader, get_fcst_loss=False):
+    """Label-weighted ERA5 MAE of the model (or of the background).
+
+    The observation-consistency term is reported on the side but is deliberately
+    *not* part of the returned number, so the val-best checkpoint keeps being
+    selected on the ERA5 fit and ``best_val`` stays comparable across runs.
+    """
     model.eval()
     ddp_loss = torch.zeros(2).to(rank)
+    ddp_oc = torch.zeros(3).to(rank)
+    obs_loss = getattr(cfg, 'obs_loss', None)
     hw = getattr(cfg, 'grid_hw', None)
 
     for batch_fcst, batch_obs, batch_era5 in dataloader:
+        obs_raw = batch_obs                      # standardised window, pre-masking
         batch_fcst = process_bg(batch_fcst, rank, hw)
         batch_era5 = process_bg(batch_era5.unsqueeze(1), rank, hw)
         batch_obs = process_obs(batch_obs, cfg, rank)
+        obs_valid = (obs_at_valid_time(obs_raw, cfg, rank)
+                     if obs_loss is not None else None)
 
         if cfg.amp:
             batch_fcst = batch_fcst.half()
@@ -241,12 +330,24 @@ def evaluate(cfg, model, rank, dataloader, get_fcst_loss=False):
         loss = cfg.loss_fn(batch_out, target).item()
         ddp_loss[0] += loss
         ddp_loss[1] += 1
+        if obs_loss is not None:
+            with torch.no_grad():
+                oc = obs_loss(batch_out, obs_valid, batch_fcst)
+            ddp_oc[0] += float(oc)
+            ddp_oc[1] += float(obs_loss.last_mae_mm)
+            ddp_oc[2] += 1
 
     dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)
     epoch_loss = (ddp_loss[0] / ddp_loss[1].clamp_min(1)).item()
+    oc_note = ''
+    if obs_loss is not None:
+        dist.all_reduce(ddp_oc, op=dist.ReduceOp.SUM)
+        oc_note = (f'  [obs-consistency: term={ddp_oc[0] / ddp_oc[2].clamp_min(1):.4f}'
+                   f' |H(x)-obs|={ddp_oc[1] / ddp_oc[2].clamp_min(1):.2f} mm]')
     if rank == 0:
         kind = 'background-only' if get_fcst_loss else 'model'
-        cfg.logger.info(f'[Eval] {kind} loss={epoch_loss:.4f} (iteration {cfg.iteration})')
+        cfg.logger.info(f'[Eval] {kind} loss={epoch_loss:.4f} '
+                        f'(iteration {cfg.iteration}){oc_note}')
     return epoch_loss
 
 
@@ -268,7 +369,14 @@ def save_checkpoint_fsdp(cfg, model, rank, optimizer=None, scheduler=None, val_l
                    'val_loss': val_loss,
                    'model_id': model_id(cfg), 'exp_tag': exp_tag(cfg),
                    'arch_tag': arch_tag(cfg),
-                   'zero_obs': bool(getattr(cfg, 'zero_obs', False))}
+                   'zero_obs': bool(getattr(cfg, 'zero_obs', False)),
+                   'include_fuxi_tp': bool(getattr(cfg, 'include_fuxi_tp', False)),
+                   'obs_mode': str(getattr(cfg, 'obs_mode', 'absolute')),
+                   'loss_station_weight': float(getattr(cfg, 'loss_station_weight', 1.0)),
+                   'loss_nostation_weight': float(getattr(cfg, 'loss_nostation_weight', 1.0)),
+                   'lambda_obs': float(getattr(cfg, 'lambda_obs', 0.0) or 0.0),
+                   'obs_sigma_o_mm': float(getattr(cfg, 'obs_sigma_o_mm', 11.0)),
+                   'obs_debias': bool(getattr(cfg, 'obs_debias', False))}
         if optim_state is not None:
             payload['optimizer'] = optim_state
         if sched_state is not None:
@@ -298,6 +406,15 @@ def make_loaders(cfg, world_size, rank):
 def main(rank, configs, master_port, world_size, overrides=None):
     cfg = init_dist(rank, configs, master_port, world_size, overrides)
     cfg.amp = bool(getattr(cfg, 'amp', True))
+
+    cfg.obs_loss = build_obs_loss(cfg, rank)          # None unless lambda_obs > 0
+    if rank == 0 and cfg.obs_loss is not None:
+        cfg.logger.info(
+            f'[ObsLoss] lambda={cfg.obs_loss.weight:g} '
+            f'sigma_o={cfg.obs_loss.sigma_o_mm:g} mm '
+            f'-> effective {cfg.obs_loss.weight / cfg.obs_loss.sigma_o_mm:.4f} per mm; '
+            f'debias={cfg.obs_loss.bias is not None} '
+            f'stations={cfg.obs_loss.operator.n_cell}')
 
     train_loader, val_loader, test_loader = make_loaders(cfg, world_size, rank)
     if rank == 0:
@@ -421,6 +538,13 @@ def main(rank, configs, master_port, world_size, overrides=None):
         'num_iteration': cfg.num_iteration, 'batch_size': cfg.batch_size,
         'obs_frames': cfg.obs_frames, 'training_tp': getattr(cfg, 'tp_label_source', 'imerg'),
         'zero_obs': bool(getattr(cfg, 'zero_obs', False)),
+        'include_fuxi_tp': bool(getattr(cfg, 'include_fuxi_tp', False)),
+        'obs_mode': str(getattr(cfg, 'obs_mode', 'absolute')),
+        'loss_station_weight': float(getattr(cfg, 'loss_station_weight', 1.0)),
+        'loss_nostation_weight': float(getattr(cfg, 'loss_nostation_weight', 1.0)),
+        'lambda_obs': float(getattr(cfg, 'lambda_obs', 0.0) or 0.0),
+        'obs_sigma_o_mm': float(getattr(cfg, 'obs_sigma_o_mm', 11.0)),
+        'obs_debias': bool(getattr(cfg, 'obs_debias', False)),
         'best_val_loss': best_val, 'best_iteration': best_iter, 'best_epoch': best_epoch,
         'train_loss': cfg.loss_train, 'val_loss': cfg.loss_val,
         'background_only_train': bg_train, 'background_only_val': bg_val,
@@ -442,9 +566,12 @@ def main(rank, configs, master_port, world_size, overrides=None):
         result['test_model_loss'] = loss_test_model
         result['test_background_loss'] = loss_test
         if rank == 0:
-            cfg.logger.info(f'[Test] model={loss_test_model:.4f} background={loss_test:.4f} '
-                            f'(NOTE: model includes tp, background does not -- '
-                            f'use plot_results.py for the 69-channel comparison)')
+            note = ('(NOTE: model includes tp, background does not -- '
+                    'use plot_results.py for the 69-channel comparison)'
+                    if int(cfg.model_bg_chans) < 70 else
+                    '(70 channels on both sides: FuXi tp is the tp background)')
+            cfg.logger.info(f'[Test] model={loss_test_model:.4f} '
+                            f'background={loss_test:.4f} {note}')
 
     if rank == 0:
         with open(os.path.join(experiment_dir(cfg), 'summary.json'), 'w') as fh:

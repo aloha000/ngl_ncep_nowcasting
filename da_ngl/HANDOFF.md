@@ -1,6 +1,6 @@
 # 交接笔记 — GNSS ZTD + FuXi → ERA5 同化
 
-> 最后更新：2026-09-10（当天工作结束时）
+> 最后更新：2026-09-16（当天工作结束时）
 >
 > **明天怎么继续**：直接说 ——「读 `da_ngl/HANDOFF.md`，继续」即可。
 
@@ -156,8 +156,11 @@ CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test
 
 ## 8. 给明天的一句话提示（可直接复制）
 
-> 读 `da_ngl/HANDOFF.md`，继续做同化。今天已经建好三个 zarr（NGL/FuXi/label）并完成一次
-> 3 卡训练（结果：分析 0.08412 vs 背景 0.08379，基本没超过背景场）。我想先做第 5 节里的第 N 项。
+> 读 `da_ngl/HANDOFF.md`，继续做同化。**先看第 12 节（2026-09-16）**：§11.8 的第 1、2 项
+> （观测一致性损失 + 逐站去静态偏差）都实现并跑完了。网络终于真的用上了观测——ZTD 残差 val 9.2→2.5 mm、
+> 站内优于背景的通道 44/69、r500–r1000 改善 +1.4~2.3%，去掉 msl 之后站内就是 **+0.375%**，
+> 正好追平线性 Kalman 基线。**唯一堵点是 msl 一个通道**（站内 −114%，占净亏的 127%）。
+> 下一步建议先做 12.8 的第 1 项（把 msl 增量按住），再做第 2 项（把"更多 epoch"和调度分开）。
 
 ---
 
@@ -239,7 +242,9 @@ da_ngl/logs/{model_id}_{模型配置}.log
 | `模型配置` | 网络结构 | 自动：`ed128_d222` |
 
 自动 tag 的规则：`lead{fcst_step*6}h_obs{obs_frames*5//60}h_{tp_label_source}tp`
-和 `ed{model_embed_dim}_d{depth}`。想自己起名就在 configs 里写死字符串，
+和 `ed{model_embed_dim}_d{depth}`。2026-09-15 起 `实验配置` 还会自动带这些后缀：
+`_bgtp`（背景含 FuXi tp）、`_w{站内权重}-{无站权重}`（站点加权损失，如 `_w1-0.1`）、
+`_zeroobs`、`_both`/`_residual`（obs_mode）。想自己起名就在 configs 里写死字符串，
 或命令行覆盖：
 
 ```bash
@@ -255,3 +260,315 @@ python plot_results.py --model_id exp3 --exp_tag obs6h_v2 --arch_tag ed128_d222 
   计时和 `[MaxMem]` 去掉了（11MB 的 log -> 3KB 量级）
 * logger 的 stdout handler 降成 WARNING，所以 `nohup ... > xxx.log` 那个重定向文件不会
   再复制一份完整日志
+
+---
+
+## 11. 2026-09-15 更新
+
+### 11.1 lead 24h 的数据集（新建）
+
+`preprocessing/build_fuxi_zarr.py` 加了两个参数（默认值都保持旧行为）：
+
+* `--init-pad-hours N`：把 init 窗口两端各扩 N 小时。lead 24h 时 `init = T - 24h`，
+  不扩的话每个 split 两端会各少 4 个样本；`--init-pad-hours 24` 后三个 split 与 6h
+  **逐样本对齐**（train/val/test = 3403/980/1092，label 与 obs 索引完全相同）。
+* `--with-tp`：额外存 FuXi 自己的 tp 作 channel 69（70 通道），它本来就和标签同一套
+  log1p 标准化空间，可以直接用。
+
+产物：
+
+| 文件 | 内容 |
+| --- | --- |
+| `dataset/fuxi_europe_0p25_24h.zarr` | lead 24h，5484 init（2021-12-31 00:00 起），step=[24]，69ch，4.6GB |
+| `dataset/fuxi_europe_0p25_24h_70ch.zarr` | 同上 + FuXi tp，70ch，4.7GB |
+| `dataset/ztd_fuxi_europe_0p25_24h.zarr` | H(FuXi@24h) 站格点 ZTD [mm]，5476 时刻，156MB |
+
+`build_ztd_fuxi_zarr.py` 加了 `--set`（可直接覆盖 `fcst_step` / `fuxi_zarr`，不用另写配置模块）。
+⚠️ 跑 24h 的 innovation 实验时**必须同时** `--set ztd_fuxi_zarr=.../ztd_fuxi_europe_0p25_24h.zarr`，
+否则会静默使用 6h 的 H(FuXi)。
+
+背景误差（test，69ch 纬度加权）：**6h 0.0838 → 24h 0.1261（+50%）**。
+
+### 11.2 lead24 的五次实验（全部跑完）
+
+test split，1092 样本，69 通道纬度加权；"相对背景 = 100×(背景−分析)/背景"，负 = 比背景差。
+站内口径 = 只统计 1378 个有站格点。
+
+| 实验（model_id） | 背景 | 损失权重 | 观测 | 分析(全格) | 相对背景 | 优通道 | 站内分析 | 站内相对 | tp MAE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lead24` | 69ch | 1/1 | 真 | 0.12634 | −0.214% | 24/69 | 0.12738 | −0.232% | 0.3060 |
+| `lead24_obs_zero` | 69ch | 1/1 | 置零 | 0.12630 | −0.183% | 26/69 | 0.12732 | −0.180% | 0.3096 |
+| `lead24_with_fuxi_tp` | 70ch | 1/1 | 真 | 0.12617 | −0.076% | 33/69 | 0.12719 | −0.079% | **0.2371** |
+| `lead24_with_fuxi_tp_obs_zero` | 70ch | 1/1 | 置零 | 0.12617 | −0.077% | 33/69 | 0.12719 | −0.081% | **0.2371** |
+| `lead24_fuxi_tp_innov`（obs_mode=both） | 70ch | 1/1 | 真(绝对+innovation) | 0.12622 | −0.119% | 36/69 | 0.12723 | −0.113% | 0.2381 |
+| `lead24_fuxi_tp_grid_weight`（w1-0.1） | 70ch | 1/0.1 | 真 | 0.12639 | **−0.250%** | 25/69 | 0.12724 | **−0.119%** | 0.2383 |
+
+参照：背景 0.12607（全格）/ 0.12709（站内），气候态 1.03624，tp 气候态 0.82520。
+完整表格另存 `test/lead24_comparison.md` / `.csv`。
+
+### 11.3 四个假设全部被否掉
+
+| 假设 | 实验 | 结果 |
+| --- | --- | --- |
+| 观测表示不对（绝对 ZTD 无法构造增量） | abs vs abs+innovation（24h） | 无改善（−0.119% vs −0.076%） |
+| 观测没信息量 | 观测置零 | 与真观测差 1e-6 |
+| 背景太强、没有空间 | lead 6h vs 24h | 24h 更差 |
+| 无站格点主导梯度 | 站点加权 w1-0.1 | **显著变差**（配对 t = −24，95% CI [−0.188, −0.159] pp） |
+
+另外两个直接测量：
+
+* 网络修正量 δ 与背景误差 e 的相关 **corr(δ,e) = +0.05**；把 δ 缩放到最优系数 a*=0.40 也只值 **+0.16%**。
+* 静态后处理上限（逐格点逐通道仿射，直接在 test 上拟合）**只有 +0.60%**；在 train 上拟合迁移到 test ≈ 0。
+* 24h 误差方差分解：**46.5% 是 6h 就有的结构性差异 + 56.6% 是 18h 预报新增 + 交叉 −3.1%**
+  （corr(e6, d) = −0.03，即"多预报 18 小时新增的误差"与 6h 误差无关，属于丢掉的信息）。
+
+### 11.4 关键新证据：线性 Kalman 基线能拿到 +0.376%
+
+用训练期逐站逐通道最小二乘拟合 `x_a = x_bg + K·(obs − H(bg))`，在 test 上评估
+（1378 站格点，69 通道，纬度加权）：
+
+| 方法 | 参数 | 训练集 | 测试集 | 相对背景 |
+| --- | --- | --- | --- | --- |
+| 背景（恒等） | — | 0.13590 | 0.12719 | — |
+| 线性 DA：pooled K | 69 | 0.13567 | 0.12705 | +0.109% |
+| 线性 DA：逐站 K（λ=0） | 95k | 0.13541 | 0.12693 | +0.203% |
+| **线性 DA：逐站 K（λ=1，K/(1+λ)）** | 95k | 0.13535 | **0.12671** | **+0.376%** |
+| 参照：CNN（lead24+FuXi tp） | 73.7M | — | 0.12719 | −0.079% |
+
+逐通道改善（λ=1）：**r700 +2.31%、r850 +2.12%、r600 +1.67%、r500 +1.00%、r925 +0.92%**、
+z850 +0.61%、t2m +0.51%；变差的都是 ZTD 约束不到的高层/风场（r50 −0.30%、r200 −0.16%）。
+
+**含义：信息确实在观测里，一个 95k 参数的线性同化就取出了 0.38%，而 73.7M 的网络是负的。**
+网络的靶子很明确：站格点口径必须 ≥ +0.4%。脚本与表格：`test/linear_da_baseline.{py,md}`。
+
+### 11.5 innovation 的信噪比（修正后的正确数字）
+
+| | 训练期 | 测试期 |
+| --- | --- | --- |
+| 观测异常 std | 48.2 mm | 46.6 mm |
+| std(obs − H(ERA5)) | **11.3 mm** | **10.9 mm**（= 算子+代表性误差） |
+| 信号 std（H(ERA5)−H(FuXi)）6h / 24h | 7.4 / 10.3 mm | 6.7 / 9.8 mm |
+| corr(innovation, 真列误差) 6h / 24h | +0.21 / **+0.44** | +0.23 / **+0.48** |
+
+即 lead 24h 的 innovation 比 6h 干净得多（相关翻倍），但网络仍然没利用它——
+这进一步把问题定位在训练目标上，而不是观测信息量。
+
+⚠️ 我在中途把 NGL store 的时间轴单位当成小时（实际是 **minutes**），导致帧索引错位，
+一度报出"信号只占 4%"的错误结论，已作废。**一律用 `common.decode_time_axis`**。
+
+### 11.6 代码改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `configs.py` | 新增 `include_fuxi_tp`（默认 False）、`loss_station_weight` / `loss_nostation_weight`（默认 1.0/1.0） |
+| `build_optimizer.py` | `_LatWeightedLoss.set_cell_weight((H,W))`：纬度权重上再乘逐格点权重；(1,1) 时与旧行为**逐位相同** |
+| `utils.py` | `bg_chans(cfg)`、`station_cell_mask(cfg)` / `station_cell_weight(cfg)`（含 mask 极性校验）、exp_tag 新后缀 |
+| `utils_data.py` | 背景按 `bg_chans(cfg)` 切通道；开了 `include_fuxi_tp` 但 store 只有 69 通道时**直接报错** |
+| `train_FSDP.py` | 同步 `model_bg_chans`、安装站点权重并打印 `[Loss]` 行、summary/ckpt 记录 `include_fuxi_tp`+`obs_mode`+损失权重 |
+| `plot_results.py` | 新增站内口径：`mae_*_69ch_station`、`improve_pct_69ch_station`、`n_channels_better_station`、`n_station_cells` |
+| `build_fuxi_zarr.py` | `--init-pad-hours`、`--with-tp` |
+| `build_ztd_fuxi_zarr.py` | `--set KEY=VALUE` |
+
+### 11.7 今天踩的坑
+
+1. **NGL store 的时间单位是 minutes**（`[0,5,10] minutes since 2022-01-01`），不是 hours。
+   手写脚本时硬编码 `unit='h'` 会让 `searchsorted` 出来的帧索引错位，观测就配到了错误时刻。
+2. **不要在 run 跑着的时候改 `utils_data.py`**：train/val 的 DataLoader worker 启动时就 fork 好了，
+   而 test 的 worker 到收尾评估才第一次 fork——会拿到新代码 + 旧对象，报
+   `AttributeError: 'AssimilationDataset' object has no attribute 'bg_n_chans'`，
+   `train.sh` 因为 `set -e` 直接终止，链式评估不会跑（那次是手动补的 `plot_results.py`）。
+3. 开了站点加权后，**val-best 的选择标准也是加权损失**，所以不同权重档位的 `best_val` 不可比；
+   test 指标（`plot_results.py`）保持不加权，另加站内口径。
+4. 同 `model_id` 的日志（追加）与 ckpt 文件名会被复用，只靠 exp_tag 区分实验时日志会混在一起——换 `model_id`。
+
+### 11.8 下一步（按优先级）
+
+1. **观测一致性损失**：`J = J_b + λ·|H(x_analysis) − obs| / σ_o`（σ_o ≈ 11 mm，算子已可微）。
+   这是唯一能给网络"往哪个方向改"的梯度项；现在的损失里完全没有。
+2. **观测去静态偏差**：逐站减掉 `(obs − H(bg))` 的长期均值，别让网络先学 1378 个常数偏移。
+3. **混合方案**：把线性分析 `x_bg + K·d` 当额外输入通道（或残差基准），网络上只学修正。
+4. **线性 DA 扩展成全网格**（把站格点的增量做空间传播），补上与 CNN 同口径的全格点比较。
+5. （可选）**oracle 实验**：用 H(ERA5) 当完美观测，检验架构上限（需要新建 `ztd_era5_*.zarr`，
+   脚本已规划：把 `ztd_profile_surface` 作用到 label store 的 0–68 通道）。
+
+### 11.9 今天新增的产物
+
+```
+dataset/  fuxi_europe_0p25_24h.zarr, fuxi_europe_0p25_24h_70ch.zarr, ztd_fuxi_europe_0p25_24h.zarr
+test/     pipeline_flowchart.{png,md,dot}, model_arch.svg, model_arch.md, model_arch_blocks.svg,
+          lead24_comparison.{md,csv}, linear_da_baseline.{py,md}
+logs/     build_fuxi_24h.log, build_fuxi_24h_70ch.log, build_ztd_fuxi_24h.log
+results/  lead24_lead24h_obs6h_era5tp, lead24_obs_zero_*, lead24_with_fuxi_tp_*,
+          lead24_with_fuxi_tp_obs_zero_*, lead24_fuxi_tp_innov_*_bgtp_both,
+          lead24_fuxi_tp_grid_weight_*_w1-0.1_bgtp
+```
+
+---
+
+## 12. 2026-09-16 更新
+
+### 12.1 做了什么：§11.8 的第 1、2 项都实现并跑完
+
+**第 1 项 —— 观测一致性损失**
+
+```
+J = J_label + λ · mean_{有效站格点} | H(x_a) − obs' | / σ_o
+```
+
+* 新增 `main/model/ztd_torch.py`：可微 ZTD 算子的 torch 版（`StationZTD` 在 1378 个站格点上求值），
+  物理常数和通道序**直接 import `preprocessing/ztd_operator.py`**，避免两套物理漂移。
+* 新增 `main/model/build_optimizer.ObsConsistencyLoss`（MAE；先 `nan_to_num` 再作差，避免 `0×NaN` 的梯度）。
+* `train_FSDP.py` 训练/评估循环里加这一项并**单独记录**：日志行
+  `[obs-consistency: term=… |H(x)-obs|=… mm]`。**val-best 仍按 label loss 选**，所以 `best_val` 与历史可比。
+* 旋钮 `configs.lambda_obs`（0 = 关）、`obs_sigma_o_mm = 11`（§11.5 量的算子+代表误差）。
+  有效权重是 λ/σ_o，λ=0.2 时该项开局 ≈0.115，与 label loss（≈0.128）同量级。
+
+**第 2 项 —— 逐站去静态偏差**
+
+* `preprocessing/build_obs_debias.py` → `dataset/obs_debias_lead{lead}h.npz`：
+  `b_s = mean_{训练期}( obs_mm − H(bg)_mm )`，1378 个数，只用 train split。
+* 两处必须一致：innovation 从 `obs − H(bg)` 变成 `(obs − b_s) − H(bg)`；一致性损失的目标从 `obs`
+  变成 `obs − b_s`。（在 `x_a = x_bg` 处两版算子数值完全相同，所以 `b_s` 不用重建。）
+* **实测数字**：`b_s` 均值 **+8.27 mm**、|b| 均值 8.31、站间 std 4.05、范围 [−8.5, +56.4]、
+  与站高相关 **+0.42**。**它主要是一个全球常数**（H(FuXi@24h) 整体比观测低 8.27 mm），
+  去掉它只削掉 innovation 方差的 **5.8%**（std 11.61 → 10.94 mm）。
+  ⚠ §9.4 说的"85 % 方差是站点静态偏移"针对的是**绝对 ZTD**；innovation 里这部分早已被 H(bg) 吸收。
+
+**算子验证**（新增 `preprocessing/check_ztd_torch.py`）：同一份 FuXi 背景同时喂 numpy 版与 torch 版，
+在 1378 格 × 6 个时刻上 **worst |差| = 0.0007 mm**（float32 舍入级）。脚本还带梯度检查：
+`msl` 的敏感度 `|dH/dx|` = **27100**（全通道最大，是 r850 的 2 倍、r700 的 2.5 倍），
+而 `z*/u*/v*` 共 41 个通道**梯度恒为 0**（算子只读 13 层 t、13 层 r、t2m、msl = 28 个通道）。
+
+### 12.2 五次实验（test，1092 样本，纬度加权；"相对背景"负 = 比背景差）
+
+| 实验（results 目录前缀） | λ | ZHD | epoch | best_val | 全格 69ch | 全格 70ch | 站内 69ch | 站内 70ch | tp | 站内优通道 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `lead24_oc_debias` | 0.2 | 未冻 | 35 | 0.12891@35 | +0.004% | +0.101% | −0.513% | −0.393% | +3.56% | 40/69 |
+| `lead24_oc_debias_smaller_oc` | 0.05 | 未冻 | 35 | — | −0.190% | −0.120% | −0.562% | −0.479% | +2.37% | 24/69 |
+| `lead24_frzzhd` | 0.2 | **冻** | 35 | 0.12893@22 | −0.063% | +0.029% | −0.721% | −0.600% | +3.34% | 37/69 |
+| `lead24_frzzhd_more_epoch` | 0.2 | **冻** | 40 | 0.12887@21 | +0.037% | +0.137% | −0.507% | −0.383% | +3.69% | 38/69 |
+| ★ `lead24_oc_debias_more_epoch` | 0.2 | 未冻 | 40 | 0.12884@27 | **+0.096%** | **+0.196%** | **−0.245%** | **−0.127%** | **+3.77%** | **44/69** |
+
+（完整的目录名 = `{前缀}_{model_id 的 exp_tag}`，例如
+`lead24_oc_debias_more_epoch_lead24h_obs6h_era5tp_bgtp_both_oc0.2_debias`。）
+
+参照：背景 69ch = 0.126074（全格）/ 0.127090（站内）；气候态 69ch = 1.036235、tp = 0.825201；
+ERA5 tp vs IMERG tp = 0.4358；线性 Kalman 基线站内 **+0.376%**；旧 CNN 最好 −0.079%。
+"more_epoch" 两轮用的是 `num_iteration=30000, num_epochs=40` → 实际 **22720 步 = 40 epoch**
+（⚠ 和 35ep 那轮比，同时把 LR 调度从 `warmup1000/T_max19000` 拉成了 `warmup1500/T_max28500`，
+所以"训练更久"和"退火更慢"是混在一起的，见 12.6）。
+
+**网络确实开始用观测了**（对比 §4 那个恒等映射的失效模式）：
+
+| | 旧最好（lead24+FuXi tp） | ★ 未冻 40ep |
+| --- | --- | --- |
+| val `\|H(x)−obs\|` | — | 9.22 → **2.56 mm** 收尾（best 那轮 2.76）；train 0.88 mm |
+| 站内平均改动（69ch） | 0.0153 | **0.0241**（比 35ep 的 0.0260 更小，但收益更大） |
+| 站内优于背景的通道 | 33/69 | **44/69** |
+| tp（vs 训练目标 ERA5 tp） | 0.23705 | 0.23463 |
+
+未冻 35ep 那轮还能看到背景的**干偏差被观测修掉**：r700 偏差 −0.0189 → −0.0005、r600 −0.0218 → −0.0021、
+r850 −0.0174 → −0.0022（标准化单位）。这是同化系统该有的行为。
+
+### 12.3 账本：唯一堵点是 msl
+
+站内 69ch 的 ΔMAE（分析 − 背景；Δ>0 = 变差；站内背景总量 = 8.7702）：
+
+| 实验 | Δ69 | msl | 其余 68 | r\* | t\* | z\* | u/v\* | tp |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 未冻 35ep | +0.04500 | **+0.05732** | −0.01232 | −0.02858 | +0.02256 | +0.00390 | −0.01021 | −0.00940 |
+| ★ 未冻 40ep | **+0.02149** | **+0.05426** | **−0.03277** | **−0.03620** | +0.01981 | −0.00161 | −0.01477 | −0.00997 |
+| 冻 35ep | +0.06326 | −0.00021 | +0.06347 | +0.02787 | +0.04209 | +0.00355 | −0.01004 | −0.00893 |
+| 冻 40ep | +0.04445 | −0.00107 | +0.04553 | +0.02126 | +0.03722 | −0.00271 | −0.01024 | −0.00978 |
+
+★ 那轮逐通道站内改善：**r600 +2.26%、r700 +2.00%、r850 +2.00%、r1000 +1.56%、r500 +1.54%、
+r925 +1.37%、z850 +2.49%、u850 +0.95%**；亏的只有 **msl −114.32%**、t850 −7.43%、t700 −4.15%、t2m −3.98%。
+
+**关键结论：把 msl 一项摘掉，站内 Δ = 0.02149 − 0.05426 = −0.03277 → +0.375%，正好等于线性 Kalman 的 +0.376%。**
+逐通道甚至更好：r600 +2.26（线性 DA +1.67）、r500 +1.54（+1.00）、r925 +1.37（+0.92）、
+z850 +2.49（+0.61），只有 r700/r850 略低（+2.00 vs +2.31/+2.12）。
+
+**为什么偏偏是 msl**：ZTD ≈ ZHD + ZWD，而 `ZHD = 2.2768 mm/hPa` **只由地面气压决定**，所以
+`|dH/dx_msl| = 27100`（全通道最大杠杆），同时 msl 自己的背景误差又是**所有通道里最小的**
+（站内 0.0475 std = 38 Pa）——"杠杆最大 + 底子最好"是最坏组合。损失对 69 个通道**等权**，
+于是把 msl 推 Δ=0.091 std（74 Pa，约等于它自身误差的 2 倍）在损失里只值 0.054/69 ≈ 0.0008，
+而它换来的 ZTD 拟合却值 0.01 量级。**网络理性地把 msl 卖了。**
+
+### 12.4 冻 ZHD（第 3 条路）为什么不行
+
+`obs_freeze_zhd=True`（新增旋钮，`configs.py`）把算子改成 `H*(x_a) = ZHD(x_bg) + ZWD(x_a)`：
+静力项和整个柱几何（p_s、哪些层在地面以下、地表节点的 p_s）全部取自背景并 detach，
+分析场只能动热力柱。设计目标 100% 达成——**msl 站内 Δ 从 +0.0573 变成 −0.0002**（改善 +2.26%）、
+全格点从 −42.9% 回到 +0.89%。
+
+但净结果更差：其余 68 通道从 **−0.0123（赚）翻成 +0.0635（亏）**，摆动 0.0758 > 省下的 0.0575。
+原因很干净——两个版本拿到的 **ZTD 拟合量完全相同**（val `|H(x)−obs|` 尾值都是 2.47 mm），
+但冻掉之后湿柱要独扛：r700 的改动量被从 0.136 逼到 **0.210（+55%）**，r 族由赚 0.036 变成亏 0.021。
+
+即：**未冻时约 26% 的 ZTD 削减量走静力这条路**（站内 msl 平均动 0.77 hPa ≈ 1.75 mm ZHD，总削减 6.8 mm），
+把它堵上就等于让湿柱多干 1/3 的活，而湿度改动只在某个幅度内是赚的。所以"冻结"是把一个 ±0.054 的
+损失换成了 +0.077 的损失，不划算。
+
+### 12.5 代码 / 产物清单（今天新增或改动）
+
+| 文件 | 改动 |
+| --- | --- |
+| `main/model/ztd_torch.py` | **新增** 可微 ZTD 算子（`zhd_zwd_torch` / `StationZTD`，支持 `freeze_zhd`） |
+| `main/model/build_optimizer.py` | **新增** `ObsConsistencyLoss`；`__all__` 更新 |
+| `main/utils/utils.py` | **新增** `station_geometry` / `obs_debias_path` / `load_obs_debias` / `obs_debias_grid`；exp_tag 增加 `_oc{λ}` / `_frzzhd` / `_debias` |
+| `main/utils/utils_data.py` | innovation 逐站减 `b_s`（`obs_debias`） |
+| `train_FSDP.py` | 一致性项接入训练/评估，单独记录；summary/ckpt 记录 `lambda_obs`/`obs_sigma_o_mm`/`obs_debias` |
+| `configs.py` | 新增 `lambda_obs` / `obs_sigma_o_mm` / `obs_debias` / `obs_debias_file` / `obs_freeze_zhd`；默认切到 lead24 + `fuxi_europe_0p25_24h_70ch.zarr` + `obs_mode='both'` + `include_fuxi_tp=True` |
+| `plot_results.py` | **背景侧也按 70 通道统计**（第 69 通道 = FuXi tp），新增 `improve_pct_70ch` / `improve_pct_70ch_station` / `mae_bg_std_70ch` / `mae_bg_tp_vs_target_std` 等；**新增 `metrics_station.csv`**（逐通道站内口径）；修 `improve_pct` 原来是全局常数、修 loss_curve 里写死的 `bg_tr=0.0938`、修 `mae_modeltp_vs_*` / `mae_era5tp_vs_imerg_std` 漏除像素数 |
+| `preprocessing/check_ztd_torch.py` | **新增** 算子数值 + 梯度校验（numpy vs torch、冻/未冻） |
+| `preprocessing/build_obs_debias.py` | **新增** 生成 `dataset/obs_debias_lead{lead}h.npz` |
+| `test/plot_channel_improvement.py` | **新增** 单 run 的逐通道 MAE 变化图 + csv（`channel_improvement.{png,csv}`） |
+
+新增数据文件：`dataset/obs_debias_lead24h.npz`（1378 个 b_s、bias_grid、bias_std、station_id…）。
+
+### 12.6 今天踩的坑（别重复踩）
+
+1. **`num_epochs` 和 `num_iteration` 谁先到谁生效**。3 卡每 epoch 568 步（= 3403/(2×3)，1 卡是 1702），
+   所以 20000 步 = 35.2 epoch：`num_epochs=60` 完全不起作用，只调它等于没调。只调 `num_epochs`
+   把它调到小于 `num_iteration/568` 才是"按 epoch 截断"。
+2. **截断时 LR 调度不会跟着变**：`warmup` 和 cosine `T_max` 都是按 `num_iteration` 算的。
+   所以"多加 epoch"的实验会和"退火更慢"混在一起（今天两轮 40ep 就是 `num_iteration=30000`，
+   实际停在 30000 步的 74.5% 处，结束时 lr ≈1.5e-5 没有退火完）。想干净地跑 N 个 epoch 就
+   `num_iteration = N * 568` 且 `num_epochs = N`。
+3. **`summary.json` 不记录 `num_epochs`**，只能靠日志里最后一个 `[Epoch N]` 判断是哪个上限生效的。
+4. **这台机器没有任何中文字体**（`fc-list` 里 CJK = 0，matplotlib 只有 19 个 DejaVu）：
+   中文标签会全变方块，出图必须用英文，或者先塞一个 Noto/文泉驿字体进去。
+5. 评估（`plot_results.py`）可以随时重跑，是纯前向；但**不要在训练跑着的时候改 `utils_data.py`**
+   （§11.7 第 2 条，收尾评估的 worker 会拿到新代码配旧对象）。
+6. `plot_results.py` 的 `metrics.csv` / `metrics_station.csv` 会被重跑覆盖，`summary.json` / `.pth` / `.npy` 不会。
+
+### 12.7 还没解决 / 需要注意的方法学问题
+
+* **val-best 选择本身带不确定度**：五轮的 `best_val` 都在 0.1288~0.1289 这个第 4 位上打平，
+  但站内指标能差 0.02（未冻 35ep +0.0450 vs 冻 35ep +0.0633，两者 val 只差 0.00002）。
+  单次实验的"站内 ±0.01"不宜当作结论，重要判断要换 `rand_seed` 复跑 2 个看散布。
+  （已有一个弱证据：`obs_zero` 那对复现差异只有 0.003。）
+* λ=0.05 全面差于 λ=0.2（全格 70ch 由正转负、tp 从 +3.56% 掉到 +2.37%），说明**不是"观测用多了"**，
+  而是"用在了不该用的通道上"。λ 不再是主要旋钮。
+
+### 12.8 下一步（按优先级）
+
+1. **把 msl 摁住**（唯一堵点，值 +0.054；修好即 ≈+0.37%，追平线性 DA）。两个实现，建议先做 (a)：
+   * **(a) 硬约束**：模型 forward 里把 msl（通道 68）的残差置零，即分析场的 msl 恒等于背景。
+     一行代码、零超参，预测站内 Δ ≈ −0.033 → **+0.37%**。风险是湿柱负担从 74% 升到约 80%
+     （远小于全冻的 100%），r 族应能守住。
+   * **(b) 软约束**：逐通道增量惩罚 `J += μ·mean_c |Δx_c| / σ_b,c`（对角 B 的 3D-Var），
+     天然让"动 msl"变贵（它的 σ_b 只有 r700 的 1/6），μ 可调。
+2. **把"更多 epoch"这个变量做干净**：固定 `num_iteration=20000` 只放开 `num_epochs`（等价于现状），
+   或真正跑满 `num_iteration=30000, num_epochs>=53`；两种都和今天的 40ep 对比，才能分出是步数还是调度。
+3. **（可选）oracle 实验**（§11.8 第 5 项）：用 `H(ERA5)` 当完美观测测架构上限，
+   顺便给 `|H(x_a) − obs|` 一个"真值能到多少"的参照（现在 2.47 mm 已经低于算子的误差水平）。
+4. **（可选）把 `plot_channel_improvement.py` 接进 `plot_results.py`**，让每次训练自动出逐通道图。
+
+### 12.9 一句话总结今天
+
+> 观测一致性损失 + 去静态偏差把网络从"恒等映射"救了出来：站内优于背景的通道 33→44/69，
+> r500–r1000 拿到 +1.4~2.3%（与线性 Kalman 同级），去掉 msl 后站内就是 **+0.375%**。
+> 现在的问题**只剩一个通道**：msl 被当成拟合 ZTD 的廉价杠杆（杠杆最大、底子最好、损失等权），
+> 站内 −114%（占净亏的 127%）。冻 ZHD 能救 msl 但会把湿柱逼过头（r 族由赚 0.036 变亏 0.021），
+> 所以正确做法是**只摁 msl**，不是冻整个静力项。

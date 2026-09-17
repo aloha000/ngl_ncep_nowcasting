@@ -112,7 +112,24 @@ def main():
     ap.add_argument("--out", type=Path,
                     default=Path(DATASET_DIR) / "ztd_fuxi_europe_0p25_6h.zarr")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override configs.py knobs, e.g. --set fcst_step=4")
     args = ap.parse_args()
+
+    if args.set:
+        import importlib as _il
+        _cfg = _il.import_module(args.configs)
+        for item in args.set:
+            k, _, v = item.partition("=")
+            try:
+                val = int(v)
+            except ValueError:
+                try:
+                    val = float(v)
+                except ValueError:
+                    val = v
+            setattr(_cfg, k.strip(), val)
+        print(f"[cfg] overrides {args.set}")
 
     if args.out.exists():
         if not args.force:
