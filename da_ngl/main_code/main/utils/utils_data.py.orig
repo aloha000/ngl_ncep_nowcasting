@@ -246,18 +246,8 @@ class AssimilationDataset(Dataset):
             if self.debias_grid is not None:
                 # obs' = obs - b_s  <=>  innovation = obs - (H(bg) + b_s)
                 fuxi_mm = fuxi_mm + self.debias_grid
-            if self.res_scale_mm > 0:
-                # legacy: the innovation lives on a fixed mm scale of its own
-                innovation = (ztd * np.float32(z_std) + np.float32(z_mean)
-                              - fuxi_mm[None]) / np.float32(self.res_scale_mm)
-            else:
-                # unified (2026-09-18): H(FuXi) goes through the *same*
-                # standardisation as the absolute observation, so both channels
-                # the network sees live on one common scale (mean/std of the NGL
-                # training split).  The mean cancels in the difference; keeping
-                # it explicit is what makes the two channels consistent.
-                fuxi_norm = (fuxi_mm - np.float32(z_mean)) / np.float32(z_std)
-                innovation = ztd - fuxi_norm[None]
+            innovation = (ztd * np.float32(z_std) + np.float32(z_mean)
+                          - fuxi_mm[None]) / np.float32(self.res_scale_mm)
             obs = (np.concatenate([ztd[:, None], innovation[:, None]], axis=1)
                    if self.obs_mode == "both" else innovation[:, None])
 

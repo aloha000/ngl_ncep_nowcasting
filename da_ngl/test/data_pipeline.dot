@@ -1,0 +1,104 @@
+/*
+ * da_ngl 全链路数据流程图（离线建库 + 在线训练/评估），2026-09-18。
+ * 与 DATA_PIPELINE.md 配套使用。
+ *
+ * 渲染：
+ *   dot -Tpng data_pipeline.dot -o data_pipeline.png
+ *   dot -Tsvg data_pipeline.dot -o data_pipeline.svg
+ *
+ * 字体说明：本机没有中文字体（fc-list 里 CJK = 0），直接在本机渲染会显示成方块。
+ * 请在装有中文字体的机器上渲染，或把下面的 fontname 换成你系统里已有的中文字体，
+ * 例如 "Source Han Sans SC" / "Noto Sans CJK SC" / "WenQuanYi Zen Hei" /
+ * "Microsoft YaHei" / "PingFang SC"。
+ */
+digraph da_ngl {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK SC", fontsize=11, splines=ortho, nodesep=0.35, ranksep=0.45];
+  node  [shape=box, style="rounded,filled", fontname="Noto Sans CJK SC", fontsize=10,
+         fillcolor="#eef3fb", color="#4a6fa5"];
+  edge  [fontname="Noto Sans CJK SC", fontsize=9, color="#555555"];
+
+  /* ------------------------------------------------------------ 原始数据源 */
+  subgraph cluster_src {
+    label="原始数据源"; style="rounded,dashed"; color="#999999"; fontsize=11;
+    ngl   [label="NGL GNSS 天顶总延迟\n{station}.{year}.trop.zip\n解析 +TROP/SOLUTION，取 TROTOT [mm]\nUTC 5 分钟整点记录", fillcolor="#fdf3d8", color="#c9a227"];
+    meta  [label="站点元数据\nngl_europe_stations.parquet\ngnss_station_id / lat / lon / height_m", fillcolor="#fdf3d8", color="#c9a227"];
+    fuxi  [label="FuXi 预报（3 个源目录）\nz[time, step, channel70, lat, lon]\n全球 720x1440", fillcolor="#fdf3d8", color="#c9a227"];
+    era5  [label="ERA5 6 小时分析\nz[time, channel70, lat, lon]\nch0..68 已标准化，ch69 = tp", fillcolor="#fdf3d8", color="#c9a227"];
+    imerg [label="IMERG 降水\ndata[time, channel, lat, lon]", fillcolor="#fdf3d8", color="#c9a227"];
+    stats [label="mean_era5.npy / std_era5.npy\n每通道 70 个 mean/std", fillcolor="#fdf3d8", color="#c9a227"];
+    etopo [label="ETOPO2v2c_f4.nc 地形高程\n仅用于算子校验，建库不用", fillcolor="#f2f2f2", color="#999999"];
+  }
+
+  /* ------------------------------------------------------------ 离线建库 */
+  subgraph cluster_build {
+    label="离线建库（preprocessing/，一次性）"; style="rounded,dashed";
+    color="#999999"; fontsize=11;
+
+    map   [label="[1] map_stations_to_grid.py\n最近邻落格：floor((坐标-起点)/0.25+0.5)\n同格多站随机取一，seed=2021"];
+    bngl  [label="[2] build_ngl_zarr.py\n只保留秒数能被 300 整除的记录\n网格填 NaN；train 段有限值算 mean/std\n整体标准化 (x-μ)/σ"];
+    blab  [label="[3] build_label_zarr.py\nERA5 ch0..68 直接拷贝（已标准化）\nERA5 tp → ch70，IMERG tp → ch69\nIMERG：clip0 → log1p → z-score"];
+    bfuxi [label="[4] build_fuxi_zarr.py\n三源按起报时间拼接去重\n--leads 24 --init-pad-hours 24 --with-tp\n校验通道顺序与 lead 轴"];
+    bztd  [label="[5] build_ztd_fuxi_zarr.py\nZHD + ZWD + 地面节点（p_s）\n低于地面气压的层压到 p_s\n地面气压由 msl 按高程折算"];
+    bdeb  [label="[6] build_obs_debias.py\nb_s = train 段均值(obs_mm − H(bg)_mm)\n只用 train，共 1378 个值"];
+  }
+
+  /* ------------------------------------------------------------ 数据集产物 */
+  subgraph cluster_store {
+    label="数据集产物（da_ngl/dataset/）"; style="rounded,dashed";
+    color="#999999"; fontsize=11;
+    s_map [label="站点→格点映射 parquet\n9600 格 = 1378 有站 + 8222 无站(mask)", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+    s_ngl [label="NGL 库 ztd[394272,80,120]\n（标准化值）+ station/mask\n+ ztd_train_mean/std", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+    s_lab [label="标签库 label[5476,71,80,120]\n0..68 ERA5，69 IMERG tp，70 ERA5 tp", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+    s_fx  [label="背景库 z[5484,1,70,80,120]\nlead 24 h，ch69 = FuXi tp", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+    s_zt  [label="H(FuXi) 库 ztd_fuxi/zhd/zwd\n[5476,80,120] mm，站格外 NaN", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+    s_bs  [label="obs_debias_lead24h.npz\nbias_mm(1378) + bias_grid + station_id", shape=note, fillcolor="#e8f5e9", color="#4c8c4a"];
+  }
+
+  /* ------------------------------------------------------------ 在线阶段 */
+  subgraph cluster_online {
+    label="在线训练与评估（main_code/）"; style="rounded,dashed";
+    color="#999999"; fontsize=11;
+
+    ds [label="[7] 数据集组装 AssimilationDataset\n每个样本 T → (lb_i, bg_i, obs_i)\n背景 = FuXi(init=T−lead)\n观测 = 到 T 为止的 73 帧 × 5 分钟\n标签 = ERA5@T（70 通道）\nobs_mode=both：[绝对 ZTD, 创新]\n创新 = ztd_norm − (H(FuXi)−μ)/σ\n（含逐站去偏 b_s）"];
+
+    prep [label="[8] 设备侧预处理\nprocess_bg：(B,1,70,80,120)\nprocess_obs：追加 mask + 经度/纬度\n→ (B,73,5,80,120)，站格外清零\nobs_at_valid_time：取最后一帧还原成 mm"];
+
+    model [label="[9] 同化网络 AssimilationNetv6\n维度补齐 80x120 → 80x128\n编码块 40x64 → 20x32 → 解码 40x64\n再解码回 80x128\nout = 解码结果 + 背景（仅前 bg_chans 通道）\n叠加两层增强残差\nfreeze_msl 时 ch68 强制等于背景"];
+
+    loss [label="[10] 损失\n标签项：cos(纬度) 加权 MAE\n  限定在站点 halo3（5778 格）\n  区域外权重 0（无梯度）\n观测一致性项：λ_eff × 站内 MAE\n  |H(分析场) − (obs − b_s)| / σ_o\n  λ=0.2 → λ_eff=0.3407（域占比 0.587）"];
+
+    train [label="[11] 训练\nFSDP SHARD_GRAD_OP + fp16\nAdamW，预热 1250 步 → 余弦退火 T_max=23750\n梯度裁剪 32\n只保存 val 最优权重 {model_id}_{arch_tag}.pth\n另存 summary.json 与 loss 曲线"];
+
+    ev [label="[12] 评估出图 plot_results.py\n70 通道为准的头条指标\n区域（训练域）+ 站内（1378 格）两套口径\n逐通道改善排名\nmetrics.csv / metrics_station.csv /\nmetrics_region.csv / channels_70ch.csv\n地图 / 时间序列 / 降水图"];
+  }
+
+  /* ------------------------------------------------------------ 连线 */
+  ngl   -> map;
+  meta  -> map;
+  map   -> s_map;
+
+  s_map -> bngl;  ngl  -> bngl;   bngl  -> s_ngl;
+  era5  -> blab;  imerg -> blab;  stats -> blab;  blab -> s_lab;
+  fuxi  -> bfuxi; stats -> bfuxi; bfuxi -> s_fx;
+
+  s_fx  -> bztd;  s_map -> bztd;  meta -> bztd;   stats -> bztd;  bztd -> s_zt;
+  etopo -> bztd [style=dashed, label="仅校验"];
+
+  s_lab -> bdeb;  s_ngl -> bdeb;  s_zt -> bdeb;   bdeb -> s_bs;
+
+  s_ngl -> ds; s_lab -> ds; s_fx -> ds; s_zt -> ds; s_bs -> ds;
+  ds    -> prep -> model -> loss -> train -> ev;
+
+  /* 评估直接重读原始 store（纯前向），不依赖训练循环的内存状态 */
+  s_ngl -> ev [style=dashed, constraint=false];
+  s_lab -> ev [style=dashed, constraint=false];
+
+  /* ------------------------------------------------------------ 说明 */
+  subgraph cluster_legend {
+    label="关键常量与约定"; style="rounded,dotted"; color="#bbbbbb"; fontsize=10;
+    l1 [label="μ_ngl = 2333.6450 mm，σ_ngl = 119.7633 mm（NGL 训练集）\n降水 tp：mean[69] = 0.2754，std[69] = 0.4103\nmsl 通道单位是 Pa（算子内部才除以 100 转 hPa）", shape=plaintext, fillcolor="white", color="white"];
+    l2 [label="口径政策（2026-09-18 起）：长期只用 loss_domain='station_halo'；\n统计一律看 70 通道，先区域后站内，并逐通道说明升降。", shape=plaintext, fillcolor="white", color="white"];
+    l3 [label="统一归一化：obs 与 H(FuXi) 共用 NGL 的 μ/σ，\n创新 = ztd_norm − fuxi_norm = (obs−H(FuXi))/σ（tag 带 _obsstd）。", shape=plaintext, fillcolor="white", color="white"];
+  }
+}

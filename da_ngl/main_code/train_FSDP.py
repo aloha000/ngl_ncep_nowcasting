@@ -33,8 +33,9 @@ from main.model import (AssimilationNetv6, EarlyStopping, ObsConsistencyLoss,
                         get_parameter_number)
 from main.utils import (arch_tag, bg_chans, build_dataloader, checkpoint_file,
                         create_logger, experiment_dir, exp_tag, load_checkpoint,
-                        load_obs_debias, log_file, model_id, obs_chans,
-                        station_cell_weight)
+                        load_obs_debias, log_file, loss_domain_weight,
+                        loss_domain_weight_share, loss_region_mask, model_id,
+                        obs_chans, station_cell_weight)
 
 
 def init_dist(rank, configs, master_port, world_size, overrides=None):
@@ -48,12 +49,16 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
     if 'model_bg_chans' not in (overrides or {}):
         # include_fuxi_tp may have just been overridden -- keep it in sync too
         xconfig.model_bg_chans = bg_chans(xconfig)
-    # station weighting of the loss (no-op for the historical 1.0/1.0)
+    # per-cell weighting of the label loss: the historical station / no-station
+    # split, and -- with loss_domain='station_halo' -- "only inside the station
+    # mask dilated by loss_halo_cells".  No-op when every cell ends up at 1.0.
     loss_note = ''
     ws = float(getattr(xconfig, 'loss_station_weight', 1.0))
     wn = float(getattr(xconfig, 'loss_nostation_weight', 1.0))
-    if (ws, wn) != (1.0, 1.0):
-        cw = station_cell_weight(xconfig)
+    domain = str(getattr(xconfig, 'loss_domain', 'full')).lower()
+    region = loss_region_mask(xconfig)
+    if (ws, wn) != (1.0, 1.0) or domain != 'full':
+        cw = loss_domain_weight(xconfig)
         xconfig.loss_fn.set_cell_weight(cw)
         _lat = np.asarray(getattr(xconfig, 'lat', []), dtype=float)
         if _lat.size:                      # latitude-weighted share of the loss
@@ -62,9 +67,13 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
             share = float((cw[_st] * _wl[_st]).sum() / (cw * _wl).sum())
         else:
             share = float(cw[cw == ws].sum() / cw.sum())
-        loss_note = (f'\n[Loss] cell weights: station={ws:g} no-station={wn:g} '
-                     f'-> station cells hold {100 * share:.1f}% of the loss weight'
-                     f' (was 14.0%)')
+        loss_note = (f'\n[Loss] domain={domain}'
+                     + (f' halo={int(getattr(xconfig, "loss_halo_cells", 0) or 0)}'
+                        if domain == 'station_halo' else '') +
+                     f': region {int(region.sum())}/{region.size} cells '
+                     f'({100 * region.sum() / region.size:.1f}%), weights '
+                     f'in={ws:g} out={wn:g} -> region holds {100 * share:.1f}% '
+                     f'of the loss weight')
 
     if rank == 0:
         os.makedirs(experiment_dir(xconfig), exist_ok=True)
@@ -170,6 +179,18 @@ def build_obs_loss(cfg, rank):
     lam = float(getattr(cfg, 'lambda_obs', 0.0) or 0.0)
     if lam <= 0:
         return None
+    # Restricting the label loss to a sub-domain makes the label term count more
+    # per surviving cell, which dilutes lambda_obs by the domain's share of the
+    # loss weight (HANDOFF 13.4 item 4: halo3 -> 0.587, i.e. lambda 0.2 behaved
+    # like 0.117).  Compensate here so lambda_obs keeps its full-grid-equivalent
+    # meaning and stays comparable across loss domains.
+    share = 1.0
+    if bool(getattr(cfg, 'lambda_obs_domain_compensation', True)):
+        share = loss_domain_weight_share(cfg)
+        if share > 0:
+            lam = lam / share
+    cfg.lambda_obs_effective = lam
+    cfg.lambda_obs_domain_share = share
     import zarr
 
     gn = zarr.open(str(cfg.ngl_zarr), 'r')
@@ -375,8 +396,12 @@ def save_checkpoint_fsdp(cfg, model, rank, optimizer=None, scheduler=None, val_l
                    'loss_station_weight': float(getattr(cfg, 'loss_station_weight', 1.0)),
                    'loss_nostation_weight': float(getattr(cfg, 'loss_nostation_weight', 1.0)),
                    'lambda_obs': float(getattr(cfg, 'lambda_obs', 0.0) or 0.0),
+                   'lambda_obs_effective': float(getattr(cfg, 'lambda_obs_effective', 0.0) or 0.0),
+                   'lambda_obs_domain_share': float(getattr(cfg, 'lambda_obs_domain_share', 1.0)),
                    'obs_sigma_o_mm': float(getattr(cfg, 'obs_sigma_o_mm', 11.0)),
-                   'obs_debias': bool(getattr(cfg, 'obs_debias', False))}
+                   'obs_debias': bool(getattr(cfg, 'obs_debias', False)),
+                   'obs_res_scale_mm': float(getattr(cfg, 'obs_res_scale_mm', 0.0) or 0.0),
+                   'freeze_msl': bool(getattr(cfg, 'freeze_msl', False))}
         if optim_state is not None:
             payload['optimizer'] = optim_state
         if sched_state is not None:
@@ -410,9 +435,11 @@ def main(rank, configs, master_port, world_size, overrides=None):
     cfg.obs_loss = build_obs_loss(cfg, rank)          # None unless lambda_obs > 0
     if rank == 0 and cfg.obs_loss is not None:
         cfg.logger.info(
-            f'[ObsLoss] lambda={cfg.obs_loss.weight:g} '
+            f'[ObsLoss] lambda={getattr(cfg, "lambda_obs", 0.0):g} '
+            f'-> effective {cfg.obs_loss.weight:g} '
+            f'(domain share {getattr(cfg, "lambda_obs_domain_share", 1.0):.3f}); '
             f'sigma_o={cfg.obs_loss.sigma_o_mm:g} mm '
-            f'-> effective {cfg.obs_loss.weight / cfg.obs_loss.sigma_o_mm:.4f} per mm; '
+            f'-> {cfg.obs_loss.weight / cfg.obs_loss.sigma_o_mm:.4f} per mm; '
             f'debias={cfg.obs_loss.bias is not None} '
             f'stations={cfg.obs_loss.operator.n_cell}')
 
@@ -429,8 +456,12 @@ def main(rank, configs, master_port, world_size, overrides=None):
                               obs_frames=cfg.model_obs_frames,
                               out_chans=cfg.model_out_chans,
                               embed_dim=cfg.model_embed_dim,
-                              depth=cfg.model_depth).cuda(rank)
+                              depth=cfg.model_depth,
+                              freeze_msl=bool(getattr(cfg, 'freeze_msl', False))).cuda(rank)
     if rank == 0:
+        if getattr(cfg, 'freeze_msl', False):
+            cfg.logger.info('[Model] freeze_msl: analysis msl (channel 68) = '
+                            'background msl (no residual)')
         cfg.logger.info(f'[Model Parameters]: {get_parameter_number(model)}')
 
     if cfg.amp:
@@ -543,8 +574,12 @@ def main(rank, configs, master_port, world_size, overrides=None):
         'loss_station_weight': float(getattr(cfg, 'loss_station_weight', 1.0)),
         'loss_nostation_weight': float(getattr(cfg, 'loss_nostation_weight', 1.0)),
         'lambda_obs': float(getattr(cfg, 'lambda_obs', 0.0) or 0.0),
+        'lambda_obs_effective': float(getattr(cfg, 'lambda_obs_effective', 0.0) or 0.0),
+        'lambda_obs_domain_share': float(getattr(cfg, 'lambda_obs_domain_share', 1.0)),
         'obs_sigma_o_mm': float(getattr(cfg, 'obs_sigma_o_mm', 11.0)),
         'obs_debias': bool(getattr(cfg, 'obs_debias', False)),
+        'obs_res_scale_mm': float(getattr(cfg, 'obs_res_scale_mm', 0.0) or 0.0),
+        'freeze_msl': bool(getattr(cfg, 'freeze_msl', False)),
         'best_val_loss': best_val, 'best_iteration': best_iter, 'best_epoch': best_epoch,
         'train_loss': cfg.loss_train, 'val_loss': cfg.loss_val,
         'background_only_train': bg_train, 'background_only_val': bg_val,

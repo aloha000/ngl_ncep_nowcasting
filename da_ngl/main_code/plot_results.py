@@ -34,7 +34,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "preprocessing"))   # da_ngl codes (era5 stats)
 
 from main.model import AssimilationNetv6                     # noqa: E402
-from main.utils import AssimilationDataset, station_cell_mask  # noqa: E402
+from main.utils import (AssimilationDataset, loss_domain_weight_share,  # noqa: E402
+                       loss_region_mask, station_cell_mask)
 from train_FSDP import process_bg, process_obs               # noqa: E402
 from common import (CHANNELS, LABEL_CHANNELS, TRAIN_LABEL_CHANNELS,  # noqa: E402
                     era5_channel_stats)
@@ -64,7 +65,8 @@ def load_model(cfg, ckpt: Path, device):
                               obs_frames=cfg.model_obs_frames,
                               out_chans=cfg.model_out_chans,
                               embed_dim=cfg.model_embed_dim,
-                              depth=cfg.model_depth)
+                              depth=cfg.model_depth,
+                              freeze_msl=bool(getattr(cfg, 'freeze_msl', False)))
     try:
         payload = torch.load(ckpt, map_location="cpu", weights_only=False)
     except TypeError:
@@ -160,6 +162,24 @@ def main():
     # the headline metric stays unweighted so runs remain comparable.
     st_np = station_cell_mask(cfg)
     st3d = torch.as_tensor(st_np, dtype=torch.float32, device=device).view(1, 1, *st_np.shape)
+    # training-region metric: with loss_domain='station_halo' the label loss is
+    # only computed on the station mask dilated by loss_halo_cells, so the plain
+    # full-grid columns mix constrained and unconstrained cells.  This view uses
+    # exactly the cells the optimiser saw ('full' -> the station cells).
+    rg_np = loss_region_mask(cfg)
+    n_region = int(rg_np.sum())
+    rg3d = torch.as_tensor(rg_np, dtype=torch.float32, device=device).view(1, 1, *rg_np.shape)
+    # When the loss was restricted to a region, everything reported and plotted
+    # is restricted to the same cells: outside it there is no gradient, so the
+    # analysis is unconstrained and any statistic there is meaningless.  For a
+    # 'full' run the mask is all ones and nothing below changes.
+    region_limited = str(getattr(cfg, "loss_domain", "full")).lower() != "full"
+    plot_dom = rg_np if region_limited else np.ones_like(rg_np)
+    plot_dom3d = torch.as_tensor(plot_dom, dtype=torch.float32,
+                                 device=device).view(1, 1, *plot_dom.shape)
+    dom_note = (f" (training region: {n_region} cells)" if region_limited else "")
+    print(f"[eval] loss_domain={getattr(cfg, 'loss_domain', 'full')} "
+          f"halo={getattr(cfg, 'loss_halo_cells', 0)} -> {n_region} cells participate in training")
 
     mean_era5, std_era5 = era5_channel_stats()
     mean_era5, std_era5 = mean_era5[:70], std_era5[:70]
@@ -182,6 +202,8 @@ def main():
         "wsum": np.zeros(n_ch), "wsum_bg": np.zeros(n_ch),
         "model_abs_st": np.zeros(n_ch), "bg_abs_st": np.zeros(n_ch),
         "delta_abs_st": np.zeros(n_ch), "wsum_st": np.zeros(n_ch),
+        "model_abs_rg": np.zeros(n_ch), "bg_abs_rg": np.zeros(n_ch),
+        "delta_abs_rg": np.zeros(n_ch), "wsum_rg": np.zeros(n_ch),
     }
     series_model, series_bg, series_true = [], [], []
     series_etp, series_etp_err, series_imerg = [], [], []
@@ -218,7 +240,9 @@ def main():
             valid = torch.isfinite(truth)
             m = valid.float()
             m69 = m[:, :69]
-            w = w3d
+            # latitude weight x training-region mask: every weighted mean below
+            # (metrics, time series) is therefore taken over the training region
+            w = w3d * plot_dom3d
             tgt = torch.nan_to_num(truth)
             tgt69 = torch.nan_to_num(truth[:, :69])
 
@@ -254,6 +278,13 @@ def main():
             acc["bg_abs_st"] += (bias_b70.abs() * w * m_bg_full * st).sum(dim=(0, 2, 3)).cpu().numpy()
             acc["delta_abs_st"] += ((out - torch.nan_to_num(bg70)).abs() * w * m_bg_full * st).sum(dim=(0, 2, 3)).cpu().numpy()
             acc["wsum_st"] += (w * m * st).sum(dim=(0, 2, 3)).cpu().numpy()
+
+            # ... and restricted to the training region
+            rg = rg3d
+            acc["model_abs_rg"] += (bias_m.abs() * w * m * rg).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["bg_abs_rg"] += (bias_b70.abs() * w * m_bg_full * rg).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["delta_abs_rg"] += ((out - torch.nan_to_num(bg70)).abs() * w * m_bg_full * rg).sum(dim=(0, 2, 3)).cpu().numpy()
+            acc["wsum_rg"] += (w * m * rg).sum(dim=(0, 2, 3)).cpu().numpy()
 
             # latitude-weighted domain means, per sample
             den_m = (w * m).sum(dim=(2, 3)).clamp_min(1e-6)      # (B, 70)
@@ -324,6 +355,9 @@ def main():
     mae_model_st = _div(acc["model_abs_st"], acc["wsum_st"])
     mae_bg_st = _div(acc["bg_abs_st"], acc["wsum_st"])
     delta_st = _div(acc["delta_abs_st"], acc["wsum_st"])
+    mae_model_rg = _div(acc["model_abs_rg"], acc["wsum_rg"])
+    mae_bg_rg = _div(acc["bg_abs_rg"], acc["wsum_rg"])
+    delta_rg = _div(acc["delta_abs_rg"], acc["wsum_rg"])
 
     # channel 69 of the *model* is the tp it was trained on (state 0..68 + tp);
     # channel 69 of the *background* is FuXi tp when the run used include_fuxi_tp
@@ -366,9 +400,26 @@ def main():
     })
     df_st.to_csv(out_dir / "metrics_station.csv", index=False)
 
+    # The same table again, but only on the cells the label loss was computed on
+    # (station mask + halo when loss_domain='station_halo').  This is the column
+    # that is comparable across runs with different loss domains.
+    df_rg = pd.DataFrame({
+        "channel": tp_names,
+        "mae_analysis_std_region": mae_model_rg,
+        "mae_bg_std_region": mae_bg_rg,
+        "mae_analysis_phys_region": mae_model_rg * std_era5,
+        "mae_bg_phys_region": mae_bg_rg * std_era5,
+        "mean_abs_analysis_minus_bg_region": delta_rg,
+        "improve_pct_region": 100.0 * (mae_bg_rg - mae_model_rg) / mae_bg_rg,
+    })
+    df_rg.to_csv(out_dir / "metrics_region.csv", index=False)
+
     def _pct(bg, an):
         return float(100.0 * (bg - an) / bg)
 
+    _lam = float(getattr(cfg, "lambda_obs", 0.0) or 0.0)
+    _share = (loss_domain_weight_share(cfg)
+              if bool(getattr(cfg, "lambda_obs_domain_compensation", True)) else 1.0)
     summary = {
         "checkpoint": str(ckpt), "iteration": iteration, "split": args.split,
         "n_samples": len(dataset),
@@ -379,6 +430,9 @@ def main():
         "obs_debias": bool(getattr(cfg, "obs_debias", False)),
         "obs_freeze_zhd": bool(getattr(cfg, "obs_freeze_zhd", False)),
         # ---- 69 state channels -------------------------------------------------
+        "loss_domain": str(getattr(cfg, "loss_domain", "full")),
+        "loss_halo_cells": int(getattr(cfg, "loss_halo_cells", 0) or 0),
+        "n_region_cells": n_region,
         "mae_analysis_std_69ch": float(mae_model[:n_bg].mean()),
         "mae_bg_std_69ch": float(mae_bg[:n_bg].mean()),
         "improve_pct_69ch": _pct(mae_bg[:n_bg].mean(), mae_model[:n_bg].mean()),
@@ -409,13 +463,90 @@ def main():
                                          mae_model_st[:n_bg].mean()),
         "n_channels_better_station": int((mae_model_st[:n_bg] < mae_bg_st[:n_bg]).sum()),
         "mean_abs_analysis_minus_bg_69ch_station": float(delta_st[:n_bg].mean()),
+        # ---- the training region (the cells the optimiser actually saw) ------
+        "mae_analysis_std_69ch_region": float(mae_model_rg[:n_bg].mean()),
+        "mae_bg_std_69ch_region": float(mae_bg_rg[:n_bg].mean()),
+        "improve_pct_69ch_region": _pct(mae_bg_rg[:n_bg].mean(), mae_model_rg[:n_bg].mean()),
+        "n_channels_better_region": int((mae_model_rg[:n_bg] < mae_bg_rg[:n_bg]).sum()),
+        "mean_abs_analysis_minus_bg_69ch_region": float(delta_rg[:n_bg].mean()),
+        "mae_analysis_std_70ch_region": float(mae_model_rg.mean()),
+        "mae_bg_std_70ch_region": float(mae_bg_rg.mean()),
+        "improve_pct_70ch_region": _pct(mae_bg_rg.mean(), mae_model_rg.mean()),
+        "n_channels_better_70ch_region": int((mae_model_rg < mae_bg_rg).sum()),
+        "mean_abs_analysis_minus_bg_70ch_region": float(delta_rg.mean()),
         "mae_analysis_std_70ch_station": float(mae_model_st.mean()),
         "mae_bg_std_70ch_station": float(mae_bg_st.mean()),
         "improve_pct_70ch_station": _pct(mae_bg_st.mean(), mae_model_st.mean()),
         "n_channels_better_70ch_station": int((mae_model_st < mae_bg_st).sum()),
         "mean_abs_analysis_minus_bg_70ch_station": float(delta_st.mean()),
+        # what the observation term was actually pushed with (lambda_obs is the
+        # nominal, full-grid-equivalent value; the domain share is the dilution
+        # that lambda_obs_domain_compensation undoes)
+        "lambda_obs_effective": _lam / _share if _share > 0 else _lam,
+        "lambda_obs_domain_share": _share,
+        "obs_res_scale_mm": float(getattr(cfg, "obs_res_scale_mm", 0.0) or 0.0),
+        "obs_innov_unified": bool(float(getattr(cfg, "obs_res_scale_mm", 0.0) or 0.0) <= 0),
+        "freeze_msl": bool(getattr(cfg, "freeze_msl", False)),
     }
+
+    # ------------------------------------------------------------------
+    # Per-channel table on 70 channels (policy 2026-09-18: the 70-channel view
+    # is the headline and the 69-channel columns are only kept for continuity).
+    # Two views: the loss region (the cells the optimiser actually saw) and the
+    # station cells inside it.  Written to channels_70ch.csv and printed below.
+    # ------------------------------------------------------------------
+    def _rank(bg_c, an_c):
+        rows = []
+        for i, name in enumerate(tp_names):
+            b, a = float(bg_c[i]), float(an_c[i])
+            if not (np.isfinite(b) and np.isfinite(a)) or b == 0:
+                continue
+            rows.append({"channel": name, "mae_bg": b, "mae_analysis": a,
+                         "improve_pct": 100.0 * (b - a) / b})
+        rows.sort(key=lambda r: -r["improve_pct"])
+        return rows
+
+    rank_region = _rank(mae_bg_rg, mae_model_rg)
+    rank_station = _rank(mae_bg_st, mae_model_st)
+    st_by_ch = {r["channel"]: r for r in rank_station}
+    pd.DataFrame([{
+        "channel": r["channel"],
+        "improve_pct_region": r["improve_pct"],
+        "improve_pct_station": st_by_ch.get(r["channel"], {}).get("improve_pct", np.nan),
+        "mae_bg_region": r["mae_bg"], "mae_analysis_region": r["mae_analysis"],
+        "mae_bg_station": st_by_ch.get(r["channel"], {}).get("mae_bg", np.nan),
+        "mae_analysis_station": st_by_ch.get(r["channel"], {}).get("mae_analysis", np.nan),
+    } for r in rank_region]).to_csv(out_dir / "channels_70ch.csv", index=False)
+
+    def _fmt(rows):
+        return ", ".join(f"{r['channel']} {r['improve_pct']:+.2f}%" for r in rows)
+
+    summary["headline_metric"] = ("improve_pct_70ch_region" if region_limited
+                                  else "improve_pct_70ch")
+    summary["n_channels_70ch"] = int(len(rank_region))
+    for _tag, rows in (("region", rank_region), ("station", rank_station)):
+        summary[f"channels_improved_70ch_{_tag}"] = [r["channel"] for r in rows
+                                                     if r["improve_pct"] > 0]
+        summary[f"channels_worse_70ch_{_tag}"] = [r["channel"] for r in rows
+                                                  if r["improve_pct"] <= 0]
+        summary[f"channel_ranking_70ch_{_tag}"] = rows
+
     (out_dir / "metrics.json").write_text(json.dumps(summary, indent=2))
+
+    bar = "=" * 78
+    print(f"\n{bar}")
+    print("[eval] 70-channel headline (2026-09-18 policy: the 69-channel view "
+          "is history only)")
+    for _tag, bg_c, an_c, rows in (("region ", mae_bg_rg, mae_model_rg, rank_region),
+                                   ("station", mae_bg_st, mae_model_st, rank_station)):
+        imp = [r for r in rows if r["improve_pct"] > 0]
+        deg = list(reversed([r for r in rows if r["improve_pct"] <= 0]))
+        print(f"  {_tag} {bg_c.size} ch | analysis {an_c.mean():.5f} vs background "
+              f"{bg_c.mean():.5f} -> {_pct(bg_c.mean(), an_c.mean()):+.3f}% | "
+              f"better {int((an_c < bg_c).sum())}/{bg_c.size}")
+        print(f"    improved ({len(imp)}): {_fmt(imp[:8]) or '-'}")
+        print(f"    worse    ({len(deg)}): {_fmt(deg[:8]) or '-'}")
+    print(bar + "\n")
     print(json.dumps(summary, indent=2))
 
     # ---------------------------------------------------------------- plots
@@ -444,21 +575,25 @@ def main():
     ax[1].set_title("learning rate"); ax[1].grid(alpha=.3)
     fig.tight_layout(); fig.savefig(out_dir / "loss_curve.png"); plt.close(fig)
 
-    # per-channel MAE
-    bg69_mae = mae_bg[:n_bg]                    # this panel stays on the state channels
-    order = np.argsort(-bg69_mae)
-    fig, ax = plt.subplots(1, 2, figsize=(15, 5), dpi=130)
-    x = np.arange(69)
-    ax[0].bar(x - .2, bg69_mae[order], .4, label="background (FuXi)")
-    ax[0].bar(x + .2, mae_model[:n_bg][order], .4, label="analysis (model)")
-    ax[0].set_xticks(x); ax[0].set_xticklabels(np.array(CHANNELS)[order], rotation=90, fontsize=6)
+    # per-channel MAE -- all 70 channels (ERA5 0..68 + tp), the policy view
+    names70 = np.array(tp_names)
+    bg_mae70 = mae_bg[:n_ch]
+    an_mae70 = mae_model[:n_ch]
+    order = np.argsort(-np.nan_to_num(bg_mae70, nan=-1.0))
+    rel70 = 100.0 * (bg_mae70 - an_mae70) / bg_mae70
+    x = np.arange(n_ch)
+    fig, ax = plt.subplots(1, 2, figsize=(16, 5), dpi=130)
+    ax[0].bar(x - .2, bg_mae70[order], .4, label="background (FuXi)")
+    ax[0].bar(x + .2, an_mae70[order], .4, label="analysis (model)")
+    ax[0].set_xticks(x); ax[0].set_xticklabels(names70[order], rotation=90, fontsize=6)
     ax[0].set_ylabel("MAE (standardised)"); ax[0].legend(fontsize=8)
-    ax[0].set_title("per-channel MAE, sorted by background error"); ax[0].grid(alpha=.3, axis="y")
-    rel = 100 * (bg69_mae - mae_model[:n_bg]) / bg69_mae
-    ax[1].bar(x, rel[order], .6,
-              color=np.where(rel[order] > 0, "tab:green", "tab:red"))
+    ax[0].set_title(f"per-channel MAE (70 ch), sorted by background error{dom_note}",
+                    fontsize=10); ax[0].grid(alpha=.3, axis="y")
+    rel_sorted = np.nan_to_num(rel70[order])
+    ax[1].bar(x, rel_sorted, .6,
+              color=np.where(rel_sorted > 0, "tab:green", "tab:red"))
     ax[1].axhline(0, c="k", lw=.8)
-    ax[1].set_xticks(x); ax[1].set_xticklabels(np.array(CHANNELS)[order], rotation=90, fontsize=6)
+    ax[1].set_xticks(x); ax[1].set_xticklabels(names70[order], rotation=90, fontsize=6)
     ax[1].set_ylabel("MAE reduction vs background (%)")
     ax[1].set_title("improvement (positive = analysis better)"); ax[1].grid(alpha=.3, axis="y")
     fig.tight_layout(); fig.savefig(out_dir / "channel_metrics.png"); plt.close(fig)
@@ -476,12 +611,15 @@ def main():
                   (outk[ci], "analysis (model)", "RdBu_r", None),
                   (outk[ci] - bgk[ci], "analysis - background", "coolwarm", None)]
         for a, (data, title, cmap, _) in zip(axes, panels):
+            if region_limited:                       # hide what was not trained on
+                data = np.where(plot_dom, data, np.nan)
+                a.set_facecolor("#e9e9e9")
             lim = np.nanpercentile(np.abs(data), 99) or 1.0
             im = a.imshow(data, origin="lower", cmap=cmap, vmin=-lim, vmax=lim,
                           extent=[cfg.lon.min(), cfg.lon.max(), cfg.lat.min(), cfg.lat.max()],
                           aspect="auto")
             a.set_title(title, fontsize=9); plt.colorbar(im, ax=a, fraction=.046)
-        fig.suptitle(f"{cname} (standardised units)", y=1.02)
+        fig.suptitle(f"{cname} (standardised units){dom_note}", y=1.02)
         fig.tight_layout(); fig.savefig(out_dir / f"maps_{cname}.png", bbox_inches="tight"); plt.close(fig)
 
     # ------------------------------------------------------------- time series
@@ -522,7 +660,7 @@ def main():
             a1.set_title("per-step domain-mean absolute error", fontsize=9)
 
     axes[-1, 0].set_xlabel("time"); axes[-1, 1].set_xlabel("time")
-    fig.suptitle(f"test-set time series ({args.split})", y=1.0)
+    fig.suptitle(f"{args.split}-set time series ({args.split}){dom_note}", y=1.0)
     fig.tight_layout(); fig.savefig(out_dir / "timeseries.png", bbox_inches="tight"); plt.close(fig)
 
     # tp separately (no background available)
@@ -545,7 +683,7 @@ def main():
                   label=f"climatology mean {np.abs(st[:, 69]).mean():.4f}")
     ax[1].set_ylabel("tp domain-mean |err|"); ax[1].legend(fontsize=8); ax[1].grid(alpha=.3)
     ax[1].set_xlabel("time")
-    fig.suptitle("tp (standardised log1p space)", y=1.0)
+    fig.suptitle(f"tp (standardised log1p space){dom_note}", y=1.0)
     fig.tight_layout(); fig.savefig(out_dir / "timeseries_tp.png", bbox_inches="tight"); plt.close(fig)
 
     # tp maps
@@ -558,6 +696,9 @@ def main():
                                         (tp_out, f"analysis tp (trained vs {tp_name})"),
                                         (tp_out - tp_true, f"analysis - {tp_name}"),
                                         (tp_imerg - tp_era5, "IMERG - ERA5")]):
+            if region_limited:
+                d = np.where(plot_dom, d, np.nan)
+                a.set_facecolor("#e9e9e9")
             lim = np.nanpercentile(np.abs(d), 99) or 1.0
             cmap = "coolwarm" if "diff" in title or "- truth" in title else "viridis"
             im = a.imshow(d, origin="lower", cmap=cmap,
@@ -566,7 +707,7 @@ def main():
                           extent=[cfg.lon.min(), cfg.lon.max(), cfg.lat.min(), cfg.lat.max()],
                           aspect="auto")
             a.set_title(title, fontsize=9); plt.colorbar(im, ax=a, fraction=.046)
-        fig.suptitle("tp (standardised log1p space)", y=1.02)
+        fig.suptitle(f"tp (standardised log1p space){dom_note}", y=1.02)
         fig.tight_layout(); fig.savefig(out_dir / "tp_maps.png", bbox_inches="tight"); plt.close(fig)
 
     print(f"[done] figures -> {out_dir}")

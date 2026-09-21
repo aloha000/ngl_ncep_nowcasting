@@ -54,6 +54,8 @@ def exp_tag(cfg):
     wn = float(getattr(cfg, 'loss_nostation_weight', 1.0))
     if (ws, wn) != (1.0, 1.0):
         tag += f'_w{ws:g}-{wn:g}'
+    if str(getattr(cfg, 'loss_domain', 'full')).lower() == 'station_halo':
+        tag += f'_halo{int(getattr(cfg, "loss_halo_cells", 0) or 0)}'
     if getattr(cfg, 'include_fuxi_tp', False):
         tag += '_bgtp'
     if getattr(cfg, 'zero_obs', False):
@@ -61,11 +63,18 @@ def exp_tag(cfg):
     mode = str(getattr(cfg, 'obs_mode', 'absolute')).lower()
     if mode != 'absolute':
         tag += f'_{mode}'
+    # unified obs / H(FuXi) standardisation (obs_res_scale_mm = None)
+    if float(getattr(cfg, 'obs_res_scale_mm', 0.0) or 0.0) <= 0:
+        tag += '_obsstd'
+    if getattr(cfg, 'freeze_msl', False):
+        tag += '_frmsl'
     lam = float(getattr(cfg, 'lambda_obs', 0.0) or 0.0)
     if lam:
         tag += f'_oc{lam:g}'
         if getattr(cfg, 'obs_freeze_zhd', False):
             tag += '_frzzhd'
+        if bool(getattr(cfg, 'lambda_obs_domain_compensation', False)):
+            tag += '_occ'
     if getattr(cfg, 'obs_debias', False):
         tag += '_debias'
     return tag
@@ -106,6 +115,32 @@ def station_cell_mask(cfg):
     return ~mask
 
 
+def loss_region_mask(cfg):
+    """(H, W) bool: the spatial domain the *label* loss is computed on.
+
+    ``loss_domain = 'full'``          -> the 1378 station cells (historical)
+    ``loss_domain = 'station_halo'``  -> those cells dilated by
+    ``loss_halo_cells`` grid cells (Chebyshev / square kernel), i.e. the station
+    mask plus a blank halo.  Cells further away than that cannot be constrained
+    by the GNSS observations, so a regression there can only pull the analysis
+    back towards the background.
+    """
+    import numpy as np
+
+    m = station_cell_mask(cfg)
+    domain = str(getattr(cfg, 'loss_domain', 'full')).lower()
+    if domain in ('full', 'station', ''):
+        return m
+    if domain != 'station_halo':
+        raise ValueError(f"loss_domain must be 'full' or 'station_halo', got {domain!r}")
+    h = int(getattr(cfg, 'loss_halo_cells', 0) or 0)
+    if h <= 0:
+        return m
+    from scipy import ndimage as ndi
+    return np.asarray(ndi.binary_dilation(
+        m, structure=np.ones((2 * h + 1, 2 * h + 1), bool)))
+
+
 def station_cell_weight(cfg):
     """(H, W) float32 loss weights: ``loss_station_weight`` on station cells,
     ``loss_nostation_weight`` everywhere else."""
@@ -114,6 +149,45 @@ def station_cell_weight(cfg):
     m = station_cell_mask(cfg)
     return np.where(m, float(getattr(cfg, 'loss_station_weight', 1.0)),
                     float(getattr(cfg, 'loss_nostation_weight', 1.0))).astype('float32')
+
+
+def loss_domain_weight(cfg):
+    """(H, W) float32 cell weights for the label loss.
+
+    Same as :func:`station_cell_weight` but the "inside" set is
+    :func:`loss_region_mask`, so ``loss_domain='station_halo'`` widens it from
+    the station cells to the station mask + halo.  All-ones reproduces the
+    historical unweighted loss bit for bit.
+    """
+    import numpy as np
+
+    m = loss_region_mask(cfg)
+    return np.where(m, float(getattr(cfg, 'loss_station_weight', 1.0)),
+                    float(getattr(cfg, 'loss_nostation_weight', 1.0))).astype('float32')
+
+
+def loss_domain_weight_share(cfg):
+    """Fraction of the label-loss weight that survives ``loss_domain``.
+
+    The label loss is a latitude-weighted *mean* over the cells whose cell
+    weight is non-zero, so restricting the domain to ``share`` of the weight
+    makes every surviving cell count ``1/share`` times more and dilutes anything
+    added on top of the label term (the observation-consistency term) by exactly
+    ``share`` -- HANDOFF 13.4 item 4.  Returns 1.0 when the whole grid carries
+    weight.
+    """
+    import numpy as np
+
+    cw = loss_domain_weight(cfg).astype(np.float64)
+    lat = np.asarray(getattr(cfg, 'lat', []), dtype=np.float64)
+    if lat.size == cw.shape[0]:
+        wl = np.cos(np.deg2rad(lat))[:, None] * np.ones((1, cw.shape[1]))
+    else:
+        wl = np.ones_like(cw)
+    total = float(wl.sum())
+    if total <= 0:
+        return 1.0
+    return float((cw * wl).sum() / total)
 
 
 def bg_chans(cfg):

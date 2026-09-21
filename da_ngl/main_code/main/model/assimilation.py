@@ -189,10 +189,17 @@ class AssimilationNetv6(nn.Module):
     """
 
     def __init__(self, bg_chans=69, obs_chans=4, obs_frames=25, out_chans=70,
-                 embed_dim=256, depth=(1, 1, 1), pad_multiple=16):
+                 embed_dim=256, depth=(1, 1, 1), pad_multiple=16,
+                 freeze_msl=False):
         super().__init__()
         self.bg_chans = bg_chans
         self.out_chans = out_chans
+        # Hard constraint on msl (HANDOFF 12.8 item 1a): channel 68 of the
+        # analysis is forced back to the background value, so the network cannot
+        # buy a better ZTD fit by moving surface pressure.  d(ZTD)/d(msl) is the
+        # largest sensitivity in the observation operator while msl has the
+        # smallest background error, and msl carried 127 % of the net MAE change.
+        self.freeze_msl = bool(freeze_msl)
         # every fussion stage halving twice needs H, W divisible by 16; smaller
         # inputs are padded (replicate) and the output is cropped back
         self.pad_multiple = int(pad_multiple)
@@ -264,6 +271,10 @@ class AssimilationNetv6(nn.Module):
 
         out = self.enhance1(out) + out
         out = self.enhance2(out) + out
+        if self.freeze_msl and self.out_chans > 68 and self.bg_chans > 68:
+            # out (b, c, h, w) <-> bg_cp (b, bg_chans, h, w); channel 68 = msl
+            out = torch.cat(
+                [out[:, :68], bg_cp[:, 68:69].to(out.dtype), out[:, 69:]], dim=1)
         out = rearrange(out, 'b (t c) h w -> b t c h w', t=1, c=self.out_chans)
         if pad_h or pad_w:
             out = out[..., :h_in, :w_in]

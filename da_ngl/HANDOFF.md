@@ -1,8 +1,10 @@
 # 交接笔记 — GNSS ZTD + FuXi → ERA5 同化
 
-> 最后更新：2026-09-16（当天工作结束时）
+> 最后更新：2026-09-18（**口径变更**：只用 `station_halo` / 只看 70 通道 /
+> obs 与 H(FuXi) 统一归一化 ⇒ 见 **§14**）
 >
-> **明天怎么继续**：直接说 ——「读 `da_ngl/HANDOFF.md`，继续」即可。
+> **明天怎么继续**：直接说 ——「读 `da_ngl/HANDOFF.md`，继续」即可。**先看 §14**（新口径），
+> 再看 §13.6（halo 实验的结论）。
 
 ---
 
@@ -156,11 +158,13 @@ CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test
 
 ## 8. 给明天的一句话提示（可直接复制）
 
-> 读 `da_ngl/HANDOFF.md`，继续做同化。**先看第 12 节（2026-09-16）**：§11.8 的第 1、2 项
-> （观测一致性损失 + 逐站去静态偏差）都实现并跑完了。网络终于真的用上了观测——ZTD 残差 val 9.2→2.5 mm、
-> 站内优于背景的通道 44/69、r500–r1000 改善 +1.4~2.3%，去掉 msl 之后站内就是 **+0.375%**，
-> 正好追平线性 Kalman 基线。**唯一堵点是 msl 一个通道**（站内 −114%，占净亏的 127%）。
-> 下一步建议先做 12.8 的第 1 项（把 msl 增量按住），再做第 2 项（把"更多 epoch"和调度分开）。
+> 读 `da_ngl/HANDOFF.md`，继续做同化。**先看第 13 节（2026-09-17）**：把 label loss 限制在
+> "站点 + halo3"（`loss_domain='station_halo'`、区域外权重 0）**是负收益**——站内 69ch 从 −0.245%
+> 掉到 −0.423%（λ0.2）/ −0.915%（λ0.1），去掉 msl 后从 **+0.375% 掉到 +0.132%**，msl 也照旧没被治好。
+> 两个原因（§13.4）：label loss 的分母 9600→5778 格，等效 λ 被稀释成 0.117 / 0.059；被丢掉的那 39.8%
+> 格点其实是有学习信号的（§12 那轮非站格点改善了 +0.15%）。**下一步：把 `loss_domain` 改回 `'full'`，
+> 然后做 §12.8 第 1 项——只摁 msl**。⚠ §13.5：`configs.py` 里 `loss_domain` 的默认值现在是
+> `'station_halo'`，重跑老 checkpoint 的评估要显式 `--set loss_domain=full`，否则指标会被换成区域口径。
 
 ---
 
@@ -572,3 +576,233 @@ z850 +2.49（+0.61），只有 r700/r850 略低（+2.00 vs +2.31/+2.12）。
 > 现在的问题**只剩一个通道**：msl 被当成拟合 ZTD 的廉价杠杆（杠杆最大、底子最好、损失等权），
 > 站内 −114%（占净亏的 127%）。冻 ZHD 能救 msl 但会把湿柱逼过头（r 族由赚 0.036 变亏 0.021），
 > 所以正确做法是**只摁 msl**，不是冻整个静力项。
+
+---
+
+## 13. 2026-09-17 更新
+
+### 13.1 做了什么：把 label loss 限制在站点附近（halo）
+
+动机：8222 个非站格点没有观测约束，怀疑那里的回归只会把网络拉回背景。做法是把 label loss 的
+**空间域**从全格缩到"站点格 + 半径 3 格的 halo"。
+
+* `main/utils/utils.py`：新增 `loss_region_mask(cfg)`（站点 mask 的 Chebyshev 膨胀）和
+  `loss_domain_weight(cfg)`（膨胀后的区域取 `loss_station_weight`，区域外取 `loss_nostation_weight`）；
+  `exp_tag` 增加 `_halo{N}` 后缀。
+* `configs.py`：`loss_domain = 'station_halo'`（**现在是默认值**，见 §13.5）、
+  `loss_halo_cells = 3`、`loss_nostation_weight = 0.0`（区域外**没有任何损失**）。
+* 启动时会打印 `[Loss] domain=station_halo halo=3: region 5778/9600 cells (60.2%), weights in=1 out=0`。
+* `plot_results.py`：新增 `metrics_region.csv`；并且当 `loss_domain != 'full'` 时 `region_limited=True`，
+  **主指标和所有图都被限制到 region 的 5778 格**（否则图里会混进没有梯度的格子）。
+
+区域量级：5778/9600 = **60.2%** 的格点；按 cos(lat) 权重算，区域占全格权重的 **58.7%**，其中站点格
+只占区域权重的 **23.9%**（halo 里的 4400 个非站格点占 76.1%）。
+
+### 13.2 两轮实验（只差 λ，其余全同）
+
+lead24h + obs6h + `include_fuxi_tp` + `obs_mode='both'` + `obs_debias` + halo3 + w1-0、
+`num_iteration=25000`、warmup1250 / cosine `T_max=23750`（**这次是完整跑满并退火到 0**）、
+3 卡 / seed 2000。产物在 `main_code/work_dir/results/stage_two/`。
+
+| 实验（model_id） | λ | best val | best 位置 |
+| --- | --- | --- | --- |
+| `lead24h_halo3` | 0.2 | 0.13112 | epoch 21（iter 11928） |
+| `lead24h_halo3_lambda_obs_0.1` | 0.1 | 0.13168 | epoch 10（iter 5680） |
+| 参照：background-only val（同区域口径） | — | 0.13120 | — |
+
+### 13.3 结果：两轮都明显差于 §12 的全域最好那轮
+
+test，1092 样本，**cos(lat) 加权**；"相对背景"负 = 比背景差；站内 = 1378 个有站格点。
+
+| 口径 | S1 best（§12，全域 loss，λ0.2，40ep） | halo3 λ0.2 | halo3 λ0.1 |
+| --- | --- | --- | --- |
+| 站内 69ch | −0.245% | **−0.423%** | **−0.915%** |
+| 站内 70ch（含 tp） | −0.127% | −0.312% | −0.821% |
+| halo 格点 69ch（4400 个非站格点） | — | +0.050% | −0.354% |
+| 区域 69ch（5778 格） | —（无此口径） | −0.063% | −0.487% |
+| 区域 70ch | — | +0.035% | −0.405% |
+| **站内去 msl（68 状态通道）** | **+0.375%** | **+0.132%** | **−0.420%** |
+| 站内去 msl（halo / 区域） | — | +0.294% / +0.256% | −0.134% / −0.202% |
+| 参照：线性 Kalman 基线（站内去 msl） | +0.376% | — | — |
+
+逐族站内（ΔMAE 相对该族，负 = 改善）：
+
+| 族 | S1 best 全域 | halo3 λ0.2 | halo3 λ0.1 |
+| --- | --- | --- | --- |
+| r\*（13） | +1.19% | +0.92% | +0.39% |
+| t\*（13） | −1.36% | −1.55% | −2.59% |
+| z\*（13） | +0.40% | −0.46% | −3.63% |
+| u\*（14） | +0.40% | +0.19% | +0.06% |
+| v\*（14） | +0.33% | +0.19% | −0.12% |
+| msl | −114.32% | −102.34% | −91.82% |
+| t2m | −3.98% | −4.26% | −3.54% |
+| era5_tp | +3.52% | +3.12% | +2.08% |
+
+几个单通道（站内，物理单位，S1 / λ0.2 / λ0.1）：r700 7.762→7.607（+2.00%）/ 7.682（+1.03%）/
+7.775（−0.16%）；r850 6.718→6.584（+2.00%）/ 6.638（+1.19%）/ 6.703（+0.22%）；
+r600 8.010→7.829（+2.26%）/ 7.832（+2.22%）/ 7.905（+1.31%）。站内平均改动量 mean|Δx|（69ch）：
+0.0241（S1）→ 0.0271 / 0.0280——**改动更大、收益更小**。
+
+### 13.4 四条结论
+
+1. **msl 一点没被治好，依旧是全部净亏**。站内 msl MAE 38.43 → 77.76 Pa（−102%）/ 73.71 Pa（−92%）；
+   它单通道 Δ = +0.0486 / +0.0436，而站内 69ch 净 Δ 只有 +0.0371 / +0.0803，
+   msl 占净亏的 **131% / 54%**。改成 halo 只让它少亏一点（S1 是 +0.0543），代价是其余通道的收益一起被砍。
+2. **真正的信息提取量掉了约 3 倍**：去掉 msl 后站内 68 通道从 **+0.375%** 掉到 **+0.132%**（λ0.2），
+   λ0.1 直接变负。r700/r850 收益腰斩，z\* 由赚变亏。
+3. **"非站格点只会把网络拉回背景"这个前提和数据不符**。把 §12 那轮（全域 loss）拆开：站内每通道 MAE
+   **+0.000312**、非站格点 **−0.000193（−0.15%）**——非站格点在改善。这轮 halo 区里的 4400 个非站格点
+   也是改善的（69ch +0.050%、去 msl +0.294%），**反而是站点格点自己被拖到 −0.42%**。
+   被丢掉的那 3822 格（39.8%）不是噪声，是学习信号。
+4. **有效 λ 被悄悄稀释了**。label loss 按 `sum(weight)` 归一化，分母从 9600 格变成 5778 格
+   （cos-lat 权重下区域占 58.7%），每个区域格点的 label 权重涨了 **1.70 倍**，于是观测一致性项
+   相对弱了 0.587 倍 → 这两轮等效于全域名义的 **λ≈0.117 和 λ≈0.059**，都是已知会变差的方向（§12.7），
+   而且和两轮好坏顺序一致。所以"halo 更差"里有多少来自区域限制、多少来自 λ 稀释，现在分不开。
+
+另外两个观察：
+
+* **val 曲线很难看**。λ0.2 那轮 best 之后一路涨到 0.1323（+0.9%）；λ0.1 那轮的 best 停在 epoch 10
+  就再没动过、收尾 0.1347（+2.3%）。而 background-only val = 0.13120——**best 那个点只比背景好 0.06%**，
+  label 层面基本还是恒等映射，唯一的真收益仍来自 tp 和 obs 项。
+* 两轮都真的在拟合观测（best 处 val `|H(x)−obs|` = 2.67 / 2.80 mm，train 1.90 / 2.43 mm，收尾 train
+  0.80 mm），和 §12 的 2.76 mm 同级。所以不是"观测没被用上"，而是**用上之后仍然亏**。
+
+### 13.5 口径陷阱（重要，别踩）
+
+1. **`configs.py` 里 `loss_domain` 的默认值已经改成 `'station_halo'`**。`plot_results.py` 的
+   `region_limited` 判定看的是 cfg 而不是 run，所以**拿旧的"全域 loss" checkpoint 重跑评估时，如果不显式
+   `--set loss_domain=full`，指标和所有图都会被限制到 5778 格的区域口径**，`metrics.csv` 会被区域数字
+   覆盖（`metrics_station.csv` 不受影响，仍是站内口径）。
+2. `configs.py` 的 `results_dir` 现在指向 `.../results/stage_two`；评估 stage_one 的老 run 要
+   `--set results_dir=.../results/stage_one`。
+3. **这两轮没有全域数字**（设计如此），所以它们和 §12 表格里的"全格"列不可比，能比的只有站内列。
+   想补全格数字（纯前向；**别忘 `--out`，否则会覆盖 run 目录里的图和 metrics.csv**）：
+
+```bash
+cd da_ngl/main_code
+CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test --set loss_domain=full \
+  --model_id lead24h_halo3 --exp_tag lead24h_obs6h_era5tp_w1-0_halo3_bgtp_both_oc0.2_debias \
+  --out work_dir/results/stage_two/eval_fullgrid_halo3_oc0.2
+```
+
+4. `metrics_region.csv` 在 `loss_domain='full'` 时会退化成"站点格"表（区域 mask = 站点 mask），
+   别拿它当"全格"用。
+
+### 13.6 下一步
+
+1. **回到 `loss_domain='full'`**（顺手把 configs 的默认值改回去）。halo 这条路按现在的实现不值得继续：
+   两轮没有任何一处比 §12 那轮好，msl 也照旧。
+2. 正题仍是 §12.8 第 1 项：**只摁 msl**（forward 里把通道 68 的残差置零）。两轮结果又一次确认
+   msl 是净亏的全部来源，去掉它就是 **+0.37%** 量级、追平线性 Kalman。
+3. 如果还想验证"只关心站点附近"，要做得公平至少三件事：
+   * λ 按 1/0.587 放大到 **~0.34**（保持 obs:label 的相对强度），或者干脆承认这是"更弱观测权重"的实验；
+   * `num_iteration` 与对照轮对齐，别把"区域限制"和"退火更慢"混在一起；
+   * 用 `loss_nostation_weight=0.1~0.3` 的**降权**代替 `0` 的删除，保住那 3822 格的学习信号；
+     顺便扫 halo=1/2（halo=3 已覆盖 60% 面积，"限制"其实很温和）。
+4. val-best 的噪声问题（§12.7）在这两轮更明显：λ0.1 的 best 停在 epoch 10，之后 35 个 epoch 再没进步。
+   重要判断前先换个 `rand_seed` 复跑。
+
+### 13.7 一句话总结今天
+
+> 把 label loss 限制在"站点 + halo3"（区域外权重 0）是**负收益**：站内 69ch 由 −0.245% 掉到
+> −0.423%（λ0.2）/ −0.915%（λ0.1），去掉 msl 后由 **+0.375% 掉到 +0.132%**；msl 照旧是全部净亏
+> （−102%）。两个原因：① label loss 的分母 9600→5778 格，等效 λ 被稀释到 0.117 / 0.059；
+> ② 被丢掉的那 39.8% 格点其实是有学习信号的（全域那轮非站格点改善了 +0.15%）。
+> **回到全域 loss，专心做"只摁 msl"。**
+
+---
+
+## 14. 2026-09-18 更新（口径变更 + obs/H(FuXi) 统一归一化）
+
+### 14.1 三条长期约定（今天定）
+
+1. **只用 `loss_domain='station_halo'`**（`loss_halo_cells=3`、`loss_nostation_weight=0.0`），
+   不再回 `'full'`。目标是**这个区域**（5778/9600 格）比背景好，而不是全格点。
+   §13 那两轮是负收益，其中"λ 被稀释"的那部分已由 §14.2 修掉。
+2. **统计一律看 70 通道**（ERA5 0–68 + tp），不再看 69 通道；并且要**逐通道**说清楚
+   哪些提升、哪些下降。
+3. **obs 和 `ztd_fuxi` 用同一套归一化标准**——都用 NGL 训练集的 `ztd_train_mean/std`，见 §14.3。
+
+### 14.2 λ 域补偿：把 §13.4 item 4 的稀释修回来
+
+label loss 是加权**平均**，缩到 halo 之后每个保留下来的格点权重涨了 1/0.587 = 1.70 倍，
+于是观测一致性项被相对稀释 0.587 倍（§13.4 第 4 条），所以那两轮名义 λ=0.2 实际只相当于
+全域口径的 0.117（λ=0.1 那轮 ≈0.059）。
+
+* `main/utils/utils.py`：新增 `loss_domain_weight_share(cfg)`，返回 label loss 保留的
+  cos(lat) 权重占比（halo3 = **0.587**；`loss_domain='full'` 且权重 1/1 时 = 1.0）。
+* `configs.lambda_obs_domain_compensation = True`（默认开）：`train_FSDP.build_obs_loss()` 里
+  `lambda_eff = lambda_obs / share`，λ=0.2 → **0.341**。日志打印
+  `[ObsLoss] lambda=0.2 -> effective 0.3407 (domain share 0.587)`。
+* exp_tag 加 `_occ`；summary/ckpt 记录 `lambda_obs_effective` / `lambda_obs_domain_share`。
+* ⚠ **`_occ` 之前和之后的 halo 轮次不能直接比**：老的等效 λ≈0.117/0.059，新的是 0.341。
+
+### 14.3 obs 与 H(FuXi) 统一归一化
+
+原来：obs 通道是 `(obs_mm − μ)/σ`（σ=119.76 mm），而创新通道是 `(obs_mm − H(FuXi)_mm)/15 mm`
+——两个观测通道各用一套尺度，网络看到的"绝对观测"和"增量"不可比。
+
+现在（`configs.obs_res_scale_mm = None`，默认）：
+
+```
+ztd_norm   = (obs_mm     − μ_ngl) / σ_ngl     # NGL store 里本来就是它
+fuxi_norm  = (H(FuXi)_mm − μ_ngl) / σ_ngl     # 新增
+innovation = ztd_norm − fuxi_norm             # = (obs_mm − H(FuXi)_mm) / σ_ngl
+```
+
+* μ = `ztd_train_mean` = 2333.6450 mm、σ = `ztd_train_std` = 119.7633 mm
+  （NGL **训练集**全局统计，存在 NGL zarr 里）。
+* `obs_res_scale_mm` 写正数 = 保留旧行为（旧的 15.0）；exp_tag 加 `_obsstd`。
+* **副作用（已实测，不是 bug）**：创新通道 std 从 ~1.04 掉到 ~0.13
+  （≈ 10.9 mm / 119.76 mm），比绝对通道（std≈1）小一个量级。这正是"同一套标准"的直接后果。
+* `ztd_fuxi` 的 **store 本身仍是 mm**（`build_obs_debias.py`、`test/linear_da_baseline.py`、
+  出图都按 mm 用），归一化只在 dataset 里做，**不需要重建 store**。
+* 观测一致性损失不受影响：它本来就在 mm 空间比 `H(x_a)` 与 `obs_mm`（σ_o = 11 mm）。
+
+### 14.4 新增可选项 `freeze_msl`（§12.8 第 1 项的实现，默认关）
+
+`main/model/assimilation.py`：`freeze_msl=True` 时 forward 把通道 68（msl）的分析值换回背景值，
+网络再也不能用地面气压去买 ZTD 拟合；exp_tag 加 `_frmsl`。
+和 `obs_freeze_zhd` 的区别：后者把整个静力项冻掉（湿柱独扛 100%），这里只堵住 msl 这一个出口
+（湿柱扛 ~80%）——§12.4 的教训是前者不划算。
+
+### 14.5 70 通道口径（`plot_results.py`）
+
+* 新 headline：**70 通道**，region 在前、station 在后；终端打印 improved / worse 名单（各前 8）。
+* `channels_70ch.csv`：逐通道 `improve_pct_region` / `improve_pct_station` + 两边 MAE，按 region 改善排序。
+* `summary.json` 新增 `headline_metric` / `n_channels_70ch` / `channels_improved_70ch_{region,station}` /
+  `channels_worse_70ch_{region,station}` / `channel_ranking_70ch_{region,station}`。
+* `channel_metrics.png` 改成 70 通道。
+* 69 通道字段保留（历史连续性），但**不再作为结论口径**。
+
+### 14.6 代码改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `configs.py` | `obs_res_scale_mm=None`（统一归一化）、`lambda_obs_domain_compensation=True`、`freeze_msl=False`、loss_domain 长期策略注释 |
+| `main/utils/utils_data.py` | `__getitem__` 统一归一化的 innovation；启动打印归一化方式 |
+| `main/utils/utils.py` | 新增 `loss_domain_weight_share()`；exp_tag 新增 `_obsstd` / `_occ` / `_frmsl` |
+| `main/model/assimilation.py` | `freeze_msl` 参数 + forward 里通道 68 的硬约束 |
+| `train_FSDP.py` | λ 补偿接入 `build_obs_loss()`、`freeze_msl` 传入模型、日志/summary/ckpt 记录新字段 |
+| `plot_results.py` | 70 通道 headline + 逐通道排名 CSV + 70 通道图；`freeze_msl` 传入模型；summary 记录 λ_eff / obs_res_scale_mm |
+| `main/utils/__init__.py` | 导出 `loss_domain_weight_share` |
+
+### 14.7 验证（2026-09-18，只做了离线检查，还没跑训练）
+
+* `py_compile` 全过（configs / train_FSDP / plot_results / utils / utils_data / assimilation）。
+* 数值：`innovation` 与 `(obs_mm − H(FuXi))/σ` 在 5 个样本 × 8 万有效格点上最大差
+  **4.4e-7**（float32 舍入级）。
+* 通道尺度：绝对 1.0021，统一创新 **0.1304**，旧创新 1.0409（比值 0.125）。
+* `freeze_msl=True`：`max|out[68] − bg[68]| = 0.0`，相邻通道照常变（2.70）；关掉时是 2.02。
+* exp_tag 实测：`lead24h_obs6h_era5tp_w1-0_halo3_bgtp_both_obsstd_oc0.2_occ_debias`
+  （再开 freeze_msl 会多一个 `_frmsl`）；`loss_domain_weight_share = 0.587`、有效 λ = 0.3407。
+
+### 14.8 下一步
+
+1. 跑新一版 halo 实验（统一归一化 + λ 补偿，单卡 25000 步 ≈ 15 epoch）：
+   `stage3_obsstd`（不冻 msl）与 `stage3_obsstd_frmsl`（冻 msl）A/B 对比，看
+   ①统一归一化本身值不值、②msl 硬约束能不能把 region / station 的 70 通道拉正。
+   目标：region / station 70 通道 ≥ **+0.4%**（追平 §11.4 的线性 Kalman）。
+2. ⚠ 单卡 25000 步只有 ~15 epoch（3 卡同样步数是 44 epoch），和 §13 那两轮**不是同一 epoch 数**，
+   跨机器比较要留这个口子（§12.6）。
+3. 若 A/B 都还是负的，回到 §12.7：val-best 的噪声，换 `rand_seed` 复跑再看。

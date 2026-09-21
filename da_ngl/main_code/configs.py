@@ -25,8 +25,8 @@ work_dir = '/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gn
 model_id = 'model'          # 入参: --model_id ; prefixes the run folder and files
 exp_tag = None              # 实验配置 ; None -> auto from the data/setup knobs
 arch_tag = None             # 模型配置 ; None -> auto from the network shape
-results_dir = None         # None -> {work_dir}/results (kept lazy so a
-                           # config that overrides work_dir stays self-contained)
+results_dir = '/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/work_dir/results/stage_two'         
+                        
 log_dir = '/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/logs'
 
 fuxi_zarr = f'{DATASET_DIR}/fuxi_europe_0p25_24h_70ch.zarr'   # lead 24 h, +FuXi tp
@@ -59,8 +59,21 @@ obs_add_latlon = True        # append lat / lon channels
 #                 (preprocessing/ztd_operator.py + build_ztd_fuxi_zarr.py)
 #   'both'     -- two channels: absolute ZTD + innovation
 obs_mode = 'both'
-obs_res_scale_mm = 15.0      # innovation is divided by this (~its own std) so
-                             # it enters the net at O(1) like the other inputs
+# 2026-09-18 policy -- obs and H(FuXi) share ONE standardisation: the NGL
+# train-split mean/std stored in the NGL zarr (ztd_train_mean / ztd_train_std).
+#     ztd_norm  = (obs_mm     - mean_ngl) / std_ngl      <- the absolute channel
+#     fuxi_norm = (H(FuXi)_mm - mean_ngl) / std_ngl
+#     innovation = ztd_norm - fuxi_norm
+# so both observation channels the network sees live on the same scale and the
+# innovation is a plain difference of two z-scores.  None (or 0) selects this.
+# A positive number keeps the historical behaviour (innovation divided by a
+# fixed mm scale, 15.0) for reproducing pre-2026-09-18 runs.
+#
+# NOTE the size of the unified innovation channel: ~11 mm / std_ngl(119.76 mm)
+# = 0.09 in z units, an order of magnitude smaller than the absolute channel
+# (std 1).  That follows directly from "same standardisation"; the exp_tag
+# carries the `_obsstd` suffix so old and new runs cannot be mixed up.
+obs_res_scale_mm = None
 ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h.zarr'   # must match fcst_step
 
 # Which tp the *training* target uses.  The label store holds both:
@@ -92,6 +105,15 @@ zero_obs = False
 # matters: the effective weight is lambda_obs / sigma_o per mm, and 0.2/11 mm
 # makes the term ~0.15, i.e. about as large as the label MAE (~0.126 at 24 h).
 lambda_obs = 0.2
+# Keep the observation term at the same strength relative to the label term when
+# the label loss is restricted to a sub-domain.  The label loss is a weighted
+# *mean*, so restricting it to 58.7 % of the cos(lat) weight (halo3) makes every
+# surviving cell count 1/0.587 = 1.70x more and dilutes the observation term to
+# 0.587x -- HANDOFF 13.4 item 4, which is why the halo runs behaved like
+# lambda_obs = 0.117 / 0.059.  With this on the effective weight is
+# lambda_obs / domain_share (0.2 -> 0.341 on halo3), so lambda_obs keeps its
+# "full-grid equivalent" meaning and stays comparable across domains.
+lambda_obs_domain_compensation = True
 obs_sigma_o_mm = 11.0
 # Item 2 -- per-station static bias of the innovation
 #     b_s = mean over the *train* split of ( obs_mm - H(bg)_mm ),  1378 values
@@ -113,6 +135,13 @@ obs_debias_file = None       # None -> dataset/obs_debias_lead{fcst_step*6}h.npz
 # it) even though r500..r1000 and z850 gained 1-2 %.  At x_a = x_bg the frozen
 # and unfrozen forms agree exactly, so this changes only the gradient path.
 obs_freeze_zhd = False
+# Hard constraint on the *analysis* instead of on the operator (HANDOFF 12.8
+# item 1a -- the cheap fix).  Channel 68 (msl) of the network output is replaced
+# by the background msl, so the analysis cannot buy a ZTD fit with surface
+# pressure.  One line, no hyper-parameters, and unlike obs_freeze_zhd it does not
+# block the hydrostatic path: the wet column carries ~80 % of the ZTD reduction
+# instead of 100 %, so r500..r1000 should keep their 1.4-2.3 %.
+freeze_msl = False
 
 # --------------------------------------------------------------------------
 # date ranges (6-hourly, half-open [start, end); format YYYYMMDDHH)
@@ -151,8 +180,8 @@ pre_model = None
 # training
 # --------------------------------------------------------------------------
 rand_seed = 2000
-num_iteration = 25000        # total optimisation steps (per rank)
-num_epochs = 45              # safety cap; training also stops at num_iteration
+num_iteration = 20000        # total optimisation steps (per rank)
+num_epochs = 40              # safety cap; training also stops at num_iteration
 batch_size = 2
 num_workers = 8
 prefetch_factor = 3
@@ -179,7 +208,31 @@ loss_fn = mae()              # latitude-weighted, NaN-safe
 # polarity is verified at run time.  NOTE: plot_results.py keeps reporting the
 # *unweighted* metric on purpose, so runs with different weights stay comparable.
 loss_station_weight = 1.0
-loss_nostation_weight = 1.0
+loss_nostation_weight = 0.0   # 0 = cells outside the region carry no weight
+
+# Which spatial domain the LABEL loss is computed on (the observation-consistency
+# term is unaffected -- it already only sees the station cells):
+#   'full'         -- all 80x120 cells: the historical behaviour
+#   'station_halo' -- only loss_region_mask = the 1378 station cells dilated by
+#                     loss_halo_cells grid cells (square/Chebyshev halo).
+# Why: the analysis outside the halo cannot be constrained by the GNSS ZTD, so
+# the regression there can only drag the output back towards the background
+# field.  With halo=3 the region is 5778 of 9600 cells (60.2%), and after the
+# cos(lat) weighting it carries 58.7% of the loss weight.  Set
+# loss_nostation_weight to 0.0 (excluded entirely) or e.g. 0.1 (down-weighted).
+# NOTE: val-best is then selected on this weighted loss, and the full-grid
+# numbers in plot_results.py are no longer comparable with 'full' runs -- read
+# the station-cell column for those.
+# 2026-09-18 policy: 'station_halo' with loss_nostation_weight = 0 is the
+# permanent setup -- all future statistics are read on the region (and on the
+# station cells inside it), never on the full grid.  HANDOFF 13.4 showed the plain
+# version was a net loss for two separable reasons: the lambda_obs dilution
+# (now compensated by lambda_obs_domain_compensation) and the fact that the
+# discarded 39.8 % of the grid carried real learning signal.  The second one is
+# handled by keeping the *evaluation* honest (region + station + per-channel
+# tables) rather than by widening the loss back to the full grid.
+loss_domain = 'station_halo'
+loss_halo_cells = 3
 # early_stop = {'patience': 5, 'min_delta': 1e-4}
 
 # --------------------------------------------------------------------------
