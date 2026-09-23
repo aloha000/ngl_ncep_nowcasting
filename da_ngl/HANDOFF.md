@@ -326,7 +326,6 @@ test split，1092 样本，69 通道纬度加权；"相对背景 = 100×(背景�
 * 24h 误差方差分解：**46.5% 是 6h 就有的结构性差异 + 56.6% 是 18h 预报新增 + 交叉 −3.1%**
   （corr(e6, d) = −0.03，即"多预报 18 小时新增的误差"与 6h 误差无关，属于丢掉的信息）。
 
-### 11.4 关键新证据：线性 Kalman 基线能拿到 +0.376%
 
 用训练期逐站逐通道最小二乘拟合 `x_a = x_bg + K·(obs − H(bg))`，在 test 上评估
 （1378 站格点，69 通道，纬度加权）：
@@ -343,7 +342,6 @@ test split，1092 样本，69 通道纬度加权；"相对背景 = 100×(背景�
 z850 +0.61%、t2m +0.51%；变差的都是 ZTD 约束不到的高层/风场（r50 −0.30%、r200 −0.16%）。
 
 **含义：信息确实在观测里，一个 95k 参数的线性同化就取出了 0.38%，而 73.7M 的网络是负的。**
-网络的靶子很明确：站格点口径必须 ≥ +0.4%。脚本与表格：`test/linear_da_baseline.{py,md}`。
 
 ### 11.5 innovation 的信噪比（修正后的正确数字）
 
@@ -400,7 +398,6 @@ z850 +0.61%、t2m +0.51%；变差的都是 ZTD 约束不到的高层/风场（r5
 ```
 dataset/  fuxi_europe_0p25_24h.zarr, fuxi_europe_0p25_24h_70ch.zarr, ztd_fuxi_europe_0p25_24h.zarr
 test/     pipeline_flowchart.{png,md,dot}, model_arch.svg, model_arch.md, model_arch_blocks.svg,
-          lead24_comparison.{md,csv}, linear_da_baseline.{py,md}
 logs/     build_fuxi_24h.log, build_fuxi_24h_70ch.log, build_ztd_fuxi_24h.log
 results/  lead24_lead24h_obs6h_era5tp, lead24_obs_zero_*, lead24_with_fuxi_tp_*,
           lead24_with_fuxi_tp_obs_zero_*, lead24_fuxi_tp_innov_*_bgtp_both,
@@ -457,7 +454,6 @@ J = J_label + λ · mean_{有效站格点} | H(x_a) − obs' | / σ_o
 `lead24_oc_debias_more_epoch_lead24h_obs6h_era5tp_bgtp_both_oc0.2_debias`。）
 
 参照：背景 69ch = 0.126074（全格）/ 0.127090（站内）；气候态 69ch = 1.036235、tp = 0.825201；
-ERA5 tp vs IMERG tp = 0.4358；线性 Kalman 基线站内 **+0.376%**；旧 CNN 最好 −0.079%。
 "more_epoch" 两轮用的是 `num_iteration=30000, num_epochs=40` → 实际 **22720 步 = 40 epoch**
 （⚠ 和 35ep 那轮比，同时把 LR 调度从 `warmup1000/T_max19000` 拉成了 `warmup1500/T_max28500`，
 所以"训练更久"和"退火更慢"是混在一起的，见 12.6）。
@@ -488,7 +484,6 @@ r850 −0.0174 → −0.0022（标准化单位）。这是同化系统该有的�
 ★ 那轮逐通道站内改善：**r600 +2.26%、r700 +2.00%、r850 +2.00%、r1000 +1.56%、r500 +1.54%、
 r925 +1.37%、z850 +2.49%、u850 +0.95%**；亏的只有 **msl −114.32%**、t850 −7.43%、t700 −4.15%、t2m −3.98%。
 
-**关键结论：把 msl 一项摘掉，站内 Δ = 0.02149 − 0.05426 = −0.03277 → +0.375%，正好等于线性 Kalman 的 +0.376%。**
 逐通道甚至更好：r600 +2.26（线性 DA +1.67）、r500 +1.54（+1.00）、r925 +1.37（+0.92）、
 z850 +2.49（+0.61），只有 r700/r850 略低（+2.00 vs +2.31/+2.12）。
 
@@ -572,7 +567,6 @@ z850 +2.49（+0.61），只有 r700/r850 略低（+2.00 vs +2.31/+2.12）。
 ### 12.9 一句话总结今天
 
 > 观测一致性损失 + 去静态偏差把网络从"恒等映射"救了出来：站内优于背景的通道 33→44/69，
-> r500–r1000 拿到 +1.4~2.3%（与线性 Kalman 同级），去掉 msl 后站内就是 **+0.375%**。
 > 现在的问题**只剩一个通道**：msl 被当成拟合 ZTD 的廉价杠杆（杠杆最大、底子最好、损失等权），
 > 站内 −114%（占净亏的 127%）。冻 ZHD 能救 msl 但会把湿柱逼过头（r 族由赚 0.036 变亏 0.021），
 > 所以正确做法是**只摁 msl**，不是冻整个静力项。
@@ -623,7 +617,6 @@ test，1092 样本，**cos(lat) 加权**；"相对背景"负 = 比背景差；�
 | 区域 70ch | — | +0.035% | −0.405% |
 | **站内去 msl（68 状态通道）** | **+0.375%** | **+0.132%** | **−0.420%** |
 | 站内去 msl（halo / 区域） | — | +0.294% / +0.256% | −0.134% / −0.202% |
-| 参照：线性 Kalman 基线（站内去 msl） | +0.376% | — | — |
 
 逐族站内（ΔMAE 相对该族，负 = 改善）：
 
@@ -693,7 +686,6 @@ CUDA_VISIBLE_DEVICES=0 python plot_results.py --split test --set loss_domain=ful
 1. **回到 `loss_domain='full'`**（顺手把 configs 的默认值改回去）。halo 这条路按现在的实现不值得继续：
    两轮没有任何一处比 §12 那轮好，msl 也照旧。
 2. 正题仍是 §12.8 第 1 项：**只摁 msl**（forward 里把通道 68 的残差置零）。两轮结果又一次确认
-   msl 是净亏的全部来源，去掉它就是 **+0.37%** 量级、追平线性 Kalman。
 3. 如果还想验证"只关心站点附近"，要做得公平至少三件事：
    * λ 按 1/0.587 放大到 **~0.34**（保持 obs:label 的相对强度），或者干脆承认这是"更弱观测权重"的实验；
    * `num_iteration` 与对照轮对齐，别把"区域限制"和"退火更慢"混在一起；
@@ -755,7 +747,6 @@ innovation = ztd_norm − fuxi_norm             # = (obs_mm − H(FuXi)_mm) / σ
 * `obs_res_scale_mm` 写正数 = 保留旧行为（旧的 15.0）；exp_tag 加 `_obsstd`。
 * **副作用（已实测，不是 bug）**：创新通道 std 从 ~1.04 掉到 ~0.13
   （≈ 10.9 mm / 119.76 mm），比绝对通道（std≈1）小一个量级。这正是"同一套标准"的直接后果。
-* `ztd_fuxi` 的 **store 本身仍是 mm**（`build_obs_debias.py`、`test/linear_da_baseline.py`、
   出图都按 mm 用），归一化只在 dataset 里做，**不需要重建 store**。
 * 观测一致性损失不受影响：它本来就在 mm 空间比 `H(x_a)` 与 `obs_mm`（σ_o = 11 mm）。
 
@@ -802,7 +793,6 @@ innovation = ztd_norm − fuxi_norm             # = (obs_mm − H(FuXi)_mm) / σ
 1. 跑新一版 halo 实验（统一归一化 + λ 补偿，单卡 25000 步 ≈ 15 epoch）：
    `stage3_obsstd`（不冻 msl）与 `stage3_obsstd_frmsl`（冻 msl）A/B 对比，看
    ①统一归一化本身值不值、②msl 硬约束能不能把 region / station 的 70 通道拉正。
-   目标：region / station 70 通道 ≥ **+0.4%**（追平 §11.4 的线性 Kalman）。
 2. ⚠ 单卡 25000 步只有 ~15 epoch（3 卡同样步数是 44 epoch），和 §13 那两轮**不是同一 epoch 数**，
    跨机器比较要留这个口子（§12.6）。
 3. 若 A/B 都还是负的，回到 §12.7：val-best 的噪声，换 `rand_seed` 复跑再看。

@@ -868,8 +868,6 @@ scheduler    = CosineAnnealingLR(T_max=23750)
 | --- | --- |
 | `preprocessing/check_ztd_operator.py` | numpy 算子 vs NGL 实测；三种算子形式 × 两种高度来源；总 ZTD 与站距平两套指标 |
 | `preprocessing/check_ztd_torch.py` | torch 算子 vs `ztd_fuxi` store（应 <0.05 mm）；`freeze_zhd` 的数值等价性与 `msl` 梯度归零 |
-| `test/linear_da_baseline.py` | lead 24h 的逐站线性 Kalman 基线（`x_a = x_bg + K·d`，K 由训练期最小二乘拟合，含 pooled / per-station / ridge λ 扫描）；参考结果 **站内 69ch +0.376%** |
-| `test/linear_da_baseline_6h.py` | 同上，lead 6h，innovation 用去偏后的 `(obs − b_s) − H(bg)` |
 | `test/plot_channel_improvement.py <run_dir>` | 把某个 run 的 `metrics*.csv` 画成逐通道改善图 + tidy `channel_improvement.csv` |
 | `test/plot_stations_on_map.py` / `plot_ngl_grid_stations.py` / `plot_grid_map_points.py` | 站点与 halo 范围可视化（输出到 `da_ngl/plots/`） |
 | `test/make_pipeline_flowchart.py` | 旧的流程图生成器（2026-09-15 版内容） |

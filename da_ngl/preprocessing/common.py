@@ -156,7 +156,7 @@ def standardize_tp(tp_mm: np.ndarray, *, as_metres: bool) -> np.ndarray:
 
 NO_FILL_ARRAYS = (
     "time", "init", "step", "channel", "lat", "lon", "mask", "station",
-    "ztd_train_mean", "ztd_train_std",
+    "ztd_train_mean", "ztd_train_std", "zwd_train_mean", "zwd_train_std",
 )
 
 

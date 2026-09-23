@@ -2,10 +2,17 @@
 """Build the 5-minute NGL ZTD Zarr on the unified 0.25-deg 80x120 grid.
 
 One GNSS station represents each grid cell (already chosen in the grid map);
-cells without a station stay NaN (masked).  Only total zenith delay
-(``TROTOT`` -> ``ztd``, millimetres) is stored, at the native 5-minute
-sampling of the NGL archives.  Training-split mean/std are written to the
-store attributes for later normalisation.
+cells without a station stay NaN (masked).  Two fields are stored at the native
+5-minute sampling of the NGL archives, both in millimetres:
+
+    TROTOT -> ``ztd``    total zenith delay
+    TRWET  -> ``zwd``    wet zenith delay
+
+They share the same time axis, grid, mask/station arrays and normalisation
+convention (each field is standardised with its own train-split mean/std, stored
+as ``{ztd,zwd}_train_mean`` / ``{ztd,zwd}_train_std``).  Pass ``--no-wet`` to
+skip the wet delay.  Training-split statistics are written to the store
+attributes.
 """
 
 from __future__ import annotations
@@ -49,11 +56,19 @@ def _parse_epoch(epoch: str) -> np.datetime64:
 
 
 def parse_station(task):
-    """Return (station, 5-minute TROTOT series, n_records) for one station."""
+    """Return (station, TROTOT series, TRWET series, n_records) for one station.
+
+    NGL 的 ``+TROP/SOLUTION`` 段列定义::
+
+        *SITE ___EPOCH____ TROTOT _SIG TRWET TGETOT _SIG TGNTOT _SIG WVAPOR _SIG MTEMP
+
+    用空白切分后 ``fields[2]`` = TROTOT（总延迟 mm）、``fields[4]`` = TRWET（湿延迟 mm）。
+    """
     station, data_root, years, start_ns, end_ns, n_steps = task
     start = np.datetime64(start_ns, "s")
     end = np.datetime64(end_ns, "s")
     series = np.full(n_steps, np.nan, dtype=np.float32)
+    wet = np.full(n_steps, np.nan, dtype=np.float32)
     n_records = 0
     root = Path(data_root)
     for year in years:
@@ -87,12 +102,17 @@ def parse_station(task):
                                 step = int((time - start) / np.timedelta64(5, "m"))
                                 if 0 <= step < n_steps:
                                     series[step] = float(fields[2])
+                                    if len(fields) > 4:
+                                        try:
+                                            wet[step] = float(fields[4])
+                                        except ValueError:
+                                            pass
                                     n_records += 1
                     except (OSError, gzip.BadGzipFile, ValueError):
                         continue
         except (OSError, zipfile.BadZipFile):
             continue
-    return station, series, n_records
+    return station, series, wet, n_records
 
 
 def main() -> None:
@@ -103,6 +123,10 @@ def main() -> None:
     parser.add_argument("--cache", type=Path, default=None,
                         help="optional .npz to cache per-station series")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--with-wet", dest="with_wet", action="store_true", default=True,
+                        help="also store TRWET as ``zwd`` (default)")
+    parser.add_argument("--no-wet", dest="with_wet", action="store_false",
+                        help="only store TROTOT")
     args = parser.parse_args()
 
     grid = load_grid_map()
@@ -124,19 +148,31 @@ def main() -> None:
     print(f"[time] {times[0]} .. {times[-1]}  n={n_time}  years={years}")
 
     series_by_station: dict[str, np.ndarray] = {}
+    wet_by_station: dict[str, np.ndarray] = {}
     if args.cache and args.cache.exists():
         cached = np.load(args.cache, allow_pickle=True)
-        series_by_station = {}
-        n_cached = None
-        for key in cached.files:
-            values = cached[key]
-            n_cached = values.size if n_cached is None else n_cached
-            if values.size < n_time:
-                raise SystemExit(
-                    f"cache {args.cache} holds {values.size} steps, need {n_time}")
-            series_by_station[key] = values[:n_time]
-        print(f"[cache] loaded {len(series_by_station)} station series "
-              f"({n_cached} steps -> {n_time}) from {args.cache}")
+        keys = list(cached.files)
+        has_new = any(k.startswith("ztd__") for k in keys)
+        has_wet = any(k.startswith("zwd__") for k in keys)
+        if args.with_wet and not has_wet:
+            print(f"[cache] {args.cache} 是旧格式（只有 TROTOT），"
+                  f"为了取 TRWET 需要重新解析归档")
+        else:
+            n_cached = None
+            for key in keys:
+                values = cached[key]
+                n_cached = values.size if n_cached is None else n_cached
+                if values.size < n_time:
+                    raise SystemExit(
+                        f"cache {args.cache} holds {values.size} steps, need {n_time}")
+                if not has_new:                      # 旧格式：纯站名 = TROTOT
+                    series_by_station[key] = values[:n_time]
+                elif key.startswith("ztd__"):
+                    series_by_station[key[5:]] = values[:n_time]
+                elif key.startswith("zwd__"):
+                    wet_by_station[key[5:]] = values[:n_time]
+            print(f"[cache] loaded {len(series_by_station)} ztd / {len(wet_by_station)} zwd "
+                  f"series ({n_cached} steps -> {n_time}) from {args.cache}")
     if not series_by_station:
         tasks = [
             (s, str(args.data_root), years, TIME_START.to_datetime64(),
@@ -145,40 +181,56 @@ def main() -> None:
         ]
         total_records = 0
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
-            for done, (station, series, n_records) in enumerate(
+            for done, (station, series, wet, n_records) in enumerate(
                 pool.map(parse_station, tasks, chunksize=1), 1
             ):
                 series_by_station[station] = series
+                wet_by_station[station] = wet
                 total_records += n_records
                 if done % 200 == 0 or done == len(tasks):
                     print(f"[ngl] parsed {done}/{len(tasks)} stations, "
                           f"{total_records} records", flush=True)
         if args.cache:
-            np.savez_compressed(args.cache, **series_by_station)
-            print(f"[cache] wrote {args.cache}")
+            payload = {f"ztd__{k}": v for k, v in series_by_station.items()}
+            payload.update({f"zwd__{k}": v for k, v in wet_by_station.items()})
+            np.savez_compressed(args.cache, **payload)
+            print(f"[cache] wrote {args.cache} ({len(series_by_station)} ztd + "
+                  f"{len(wet_by_station)} zwd series)")
 
-    # Assemble the masked grid.
-    ztd = np.full((n_time, N_LAT, N_LON), np.nan, dtype=np.float32)
-    for station, series in series_by_station.items():
-        i, j = station_cell[station]
-        ztd[:, i, j] = series
+    def _assemble(by_station):
+        """每站序列 -> (time, lat, lon) 网格（站格外 NaN）。"""
+        grid = np.full((n_time, N_LAT, N_LON), np.nan, dtype=np.float32)
+        for station, series in by_station.items():
+            i, j = station_cell[station]
+            grid[:, i, j] = series
+        return grid
 
-    covered = np.isfinite(ztd).sum(axis=0)
-    print(f"[assemble] finite fraction {np.isfinite(ztd).mean():.4f}; "
-          f"cells with any data {int((covered > 0).sum())}")
-
-    # Training-split normalisation statistics (finite cells only).
     tr0, tr1 = pd.Timestamp(SPLITS["train"][0]), pd.Timestamp(SPLITS["train"][1])
     tr_mask = (times >= tr0) & (times < tr1)
-    train_values = ztd[tr_mask]
-    finite = np.isfinite(train_values)
-    train_mean = float(train_values[finite].mean())
-    train_std = float(train_values[finite].std())
-    print(f"[stats] train {tr0}..{tr1}: mean={train_mean:.4f} std={train_std:.4f} "
-          f"(n={int(finite.sum())})")
 
-    # Store standardised ZTD (training-split statistics), as requested.
-    ztd = ((ztd - train_mean) / train_std).astype(np.float32)
+    def _standardise(grid, name):
+        """用 train 段有限值算均值/标准差并标准化（ztd / zwd 各自一套）。"""
+        vals = grid[tr_mask]
+        finite = np.isfinite(vals)
+        mu, sd = float(vals[finite].mean()), float(vals[finite].std())
+        print(f"[stats] {name} train {tr0}..{tr1}: mean={mu:.4f} std={sd:.4f} "
+              f"(n={int(finite.sum())})")
+        return ((grid - mu) / sd).astype(np.float32), mu, sd
+
+    # ---- 总延迟 ----
+    ztd = _assemble(series_by_station)
+    covered = np.isfinite(ztd).sum(axis=0)
+    print(f"[assemble] ztd finite fraction {np.isfinite(ztd).mean():.4f}; "
+          f"cells with any data {int((covered > 0).sum())}")
+    ztd, train_mean, train_std = _standardise(ztd, "ztd")
+
+    # ---- 湿延迟（TRWET）----
+    zwd = None
+    if args.with_wet:
+        zwd = _assemble(wet_by_station)
+        print(f"[assemble] zwd finite fraction {np.isfinite(zwd).mean():.4f}; "
+              f"cells with any data {int((np.isfinite(zwd).sum(axis=0) > 0).sum())}")
+        zwd, w_mean, w_std = _standardise(zwd, "zwd")
 
     if args.output.exists():
         if not args.force:
@@ -212,6 +264,13 @@ def main() -> None:
                          chunks=(1,), compressor=compressor)
     group.create_dataset("ztd_train_std", data=np.array([train_std], dtype="f4"),
                          chunks=(1,), compressor=compressor)
+    if zwd is not None:
+        group.create_dataset("zwd", data=zwd, chunks=(288, N_LAT, N_LON), dtype="f4",
+                             fill_value=np.nan, compressor=compressor)
+        group.create_dataset("zwd_train_mean", data=np.array([w_mean], dtype="f4"),
+                             chunks=(1,), compressor=compressor)
+        group.create_dataset("zwd_train_std", data=np.array([w_std], dtype="f4"),
+                             chunks=(1,), compressor=compressor)
 
     group["time"].attrs.update(
         {"_ARRAY_DIMENSIONS": ["time"], "standard_name": "time", "timezone": "UTC",
@@ -230,11 +289,21 @@ def main() -> None:
     })
     group["ztd_train_mean"].attrs.update({"_ARRAY_DIMENSIONS": ["stat"], "units": "mm"})
     group["ztd_train_std"].attrs.update({"_ARRAY_DIMENSIONS": ["stat"], "units": "mm"})
+    if zwd is not None:
+        group["zwd"].attrs.update({
+            "_ARRAY_DIMENSIONS": ["time", "lat", "lon"], "_FillValue": np.nan,
+            "long_name": "wet zenith tropospheric delay (standardised)",
+            "units": "1", "raw_units": "mm",
+            "source_field": "TRWET (NGL wet zenith tropo delay)",
+            "standardisation": "(zwd_mm - zwd_train_mean) / zwd_train_std",
+        })
+        group["zwd_train_mean"].attrs.update({"_ARRAY_DIMENSIONS": ["stat"], "units": "mm"})
+        group["zwd_train_std"].attrs.update({"_ARRAY_DIMENSIONS": ["stat"], "units": "mm"})
     group.attrs.update(
         {
-            "title": "NGL 5-minute ZTD on the unified 0.25-deg Europe grid",
+            "title": "NGL 5-minute zenith delays (TROTOT -> ztd, TRWET -> zwd) on the unified 0.25-deg Europe grid",
             "source": str(args.data_root),
-            "source_field": "TROTOT -> ztd",
+            "source_fields": "TROTOT -> ztd (total), TRWET -> zwd (wet)",
             "grid": f"{N_LAT}x{N_LON} @ {RES} deg, lat {grid.lat.min()}..{grid.lat.max()}, "
                     f"lon {grid.lon.min()}..{grid.lon.max()}",
             "time_sampling": "5 minutes (exact UTC 5-minute records)",
@@ -242,13 +311,18 @@ def main() -> None:
             "n_stations": len(stations),
             "masked_cells": int((station_arr == "").sum()),
             "ztd_train_mean": train_mean, "ztd_train_std": train_std,
+            "zwd_stored": bool(zwd is not None),
+            **({"zwd_train_mean": w_mean, "zwd_train_std": w_std} if zwd is not None else {}),
             "ztd_storage": "standardised (ztd_mm - mean) / std, raw units mm",
             "normalisation": f"mean/std over train {SPLITS['train'][0]}..{SPLITS['train'][1]}",
             "splits": {k: list(v) for k, v in SPLITS.items()},
         }
     )
     finalize_store(args.output)
-    print(f"[output] wrote {args.output}")
+    print(f"[output] wrote {args.output}"
+          + (f"  (ztd μ/σ = {train_mean:.2f}/{train_std:.2f} mm, "
+             f"zwd μ/σ = {w_mean:.2f}/{w_std:.2f} mm)" if zwd is not None
+             else f"  (ztd μ/σ = {train_mean:.2f}/{train_std:.2f} mm)"))
 
 
 if __name__ == "__main__":

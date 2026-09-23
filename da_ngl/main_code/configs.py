@@ -43,9 +43,7 @@ grid_hw = (lat.size, lon.size)
 # --------------------------------------------------------------------------
 # sample layout
 # --------------------------------------------------------------------------
-# Background (FuXi) convention, same as the reference ``read_bg``:
-#   init = T - fcst_step * 6 h ;  step = fcst_step * 6 h
-# The 24 h store keeps only lead 24 h, so fcst_step must be 4.
+
 fcst_step = 4
 obs_frame_minutes = 5        # NGL native sampling
 obs_frames = 73              # 73 x 5 min = the 6 hours ending at T
@@ -56,115 +54,64 @@ obs_add_latlon = True        # append lat / lon channels
 # Observation channel set fed to the network:
 #   'absolute' -- the NGL ZTD as stored (standardised), i.e. the old behaviour
 #   'residual' -- obs - H(FuXi), the innovation built with the ZTD operator
-#                 (preprocessing/ztd_operator.py + build_ztd_fuxi_zarr.py)
 #   'both'     -- two channels: absolute ZTD + innovation
 obs_mode = 'both'
-# 2026-09-18 policy -- obs and H(FuXi) share ONE standardisation: the NGL
 # train-split mean/std stored in the NGL zarr (ztd_train_mean / ztd_train_std).
 #     ztd_norm  = (obs_mm     - mean_ngl) / std_ngl      <- the absolute channel
 #     fuxi_norm = (H(FuXi)_mm - mean_ngl) / std_ngl
 #     innovation = ztd_norm - fuxi_norm
-# so both observation channels the network sees live on the same scale and the
-# innovation is a plain difference of two z-scores.  None (or 0) selects this.
-# A positive number keeps the historical behaviour (innovation divided by a
-# fixed mm scale, 15.0) for reproducing pre-2026-09-18 runs.
-#
-# NOTE the size of the unified innovation channel: ~11 mm / std_ngl(119.76 mm)
-# = 0.09 in z units, an order of magnitude smaller than the absolute channel
-# (std 1).  That follows directly from "same standardisation"; the exp_tag
-# carries the `_obsstd` suffix so old and new runs cannot be mixed up.
-obs_res_scale_mm = None
-ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h.zarr'   # must match fcst_step
 
-# Which tp the *training* target uses.  The label store holds both:
-#   channel 69 = IMERG tp   (independent precipitation observation)
-#   channel 70 = ERA5 tp    (ERA5's own tp, consistent with channels 0..68)
-# plot_results.py always reports the ERA5-vs-IMERG disagreement and scores
-# the model against whichever tp it was trained on.
+obs_res_scale_mm = None  # 如果是None或0，则obs和H(Fuxi)都用 ztd_train_std 归一化；否则innovation=(obs-H(Fuxi)) / obs_res_scale_mm，绝对通道仍然用 ztd_train_std 归一化。
+
+ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h_zdz.zarr'   # must match fcst_step
+
 tp_label_source = 'era5'     # 'imerg' or 'era5'
 
-# "No GNSS" ablation: replace the ZTD values by 0 (= the training-mean ZTD,
-# which is also what a cell without a station carries) after the validity mask
-# has been built, so the network sees the station geometry but no ZTD signal.
-# Consumed by process_obs(), hence it applies to training and to
-# plot_results.py alike.
-zero_obs = False
+zero_obs = False      # "No GNSS" ablation: replace the ZTD values by 0 (= the training-mean ZTD,
 
 # --------------------------------------------------------------------------
 # observation consistency + per-station de-biasing (HANDOFF 11.8 items 1 + 2)
 # --------------------------------------------------------------------------
-# Item 1 -- observation-consistency term.  Every other term in the loss is a
-# regression against ERA5; none of them says *in which direction* the analysis
-# should move towards the GNSS ZTD, and the network settled on an almost
-# identity map.  This adds
+
 #     J = J_label + lambda_obs * MAE_{valid station cells} |H(x_a) - obs'| / sigma_o
-# with H the differentiable ZTD operator (main/model/ztd_torch.py) applied to
-# the analysis, obs' the observed ZTD at the valid time T [mm], and sigma_o the
-# operator + representativeness error.  11.5 measured std(obs - H(ERA5)) = 10.9 mm,
-# so sigma_o = 11 mm.  lambda_obs = 0 disables the term.  Note only the ratio
-# matters: the effective weight is lambda_obs / sigma_o per mm, and 0.2/11 mm
-# makes the term ~0.15, i.e. about as large as the label MAE (~0.126 at 24 h).
 lambda_obs = 0.2
-# Keep the observation term at the same strength relative to the label term when
-# the label loss is restricted to a sub-domain.  The label loss is a weighted
-# *mean*, so restricting it to 58.7 % of the cos(lat) weight (halo3) makes every
-# surviving cell count 1/0.587 = 1.70x more and dilutes the observation term to
-# 0.587x -- HANDOFF 13.4 item 4, which is why the halo runs behaved like
-# lambda_obs = 0.117 / 0.059.  With this on the effective weight is
-# lambda_obs / domain_share (0.2 -> 0.341 on halo3), so lambda_obs keeps its
-# "full-grid equivalent" meaning and stays comparable across domains.
-lambda_obs_domain_compensation = True
-obs_sigma_o_mm = 11.0
-# Item 2 -- per-station static bias of the innovation
-#     b_s = mean over the *train* split of ( obs_mm - H(bg)_mm ),  1378 values
-# built by preprocessing/build_obs_debias.py.  The innovation the network sees
-# becomes (obs - b_s) - H(bg) and the consistency-loss target is obs - b_s, so
-# the network no longer has to spend its capacity on 1378 constant offsets
-# (the absolute ZTD is ~85 % station-static variance).  b_s depends on the
-# lead, hence one cached file per lead.
-obs_debias = True
-obs_debias_file = None       # None -> dataset/obs_debias_lead{fcst_step*6}h.npz
-# Evaluate the consistency term as H*(x_a) = ZHD(x_bg) + ZWD(x_a): the
-# hydrostatic delay (and the column geometry: p_s, which levels are below
-# ground, the surface node) comes from the background, so no gradient reaches
-# msl and only the thermodynamic column (t / r / t2m) can be moved.
-# Rationale: ZHD is ~90 % of ZTD and only mirrors surface pressure -- the
-# information in a GNSS ZTD is in the wet delay -- while an unfrozen operator
-# leaves the cheap lever "buy ZTD fit by nudging msl", which cost the oc0.2 run
-# -121 % on msl at the station cells (+127 % of its net MAE change, i.e. all of
-# it) even though r500..r1000 and z850 gained 1-2 %.  At x_a = x_bg the frozen
-# and unfrozen forms agree exactly, so this changes only the gradient path.
+
+lambda_obs_domain_compensation = True  # 2026-09-21: 观测一致性损失只在站点格上算，且每个站点格的权重按其覆盖的格子数补偿（否则大站点格的权重过大）。
+obs_sigma_o_mm = 11.0           # std(obs-H(era5)) H()的逐站标准差，和lambda_obs一起决定了观测一致性损失的权重。 
+
+
+obs_debias = True     # 每个站算 mean(ztd-H(fuxi))
+# H(bg)算子变化的话，就要重新算 obs_debias_file（dataset/obs_debias_lead24h_zdz.npz）；
+obs_debias_file = f'{DATASET_DIR}/obs_debias_lead24h_zdz.npz'
+
 obs_freeze_zhd = False
-# Hard constraint on the *analysis* instead of on the operator (HANDOFF 12.8
-# item 1a -- the cheap fix).  Channel 68 (msl) of the network output is replaced
-# by the background msl, so the analysis cannot buy a ZTD fit with surface
-# pressure.  One line, no hyper-parameters, and unlike obs_freeze_zhd it does not
-# block the hydrostatic path: the wet column carries ~80 % of the ZTD reduction
-# instead of 100 %, so r500..r1000 should keep their 1.4-2.3 %.
 freeze_msl = False
+# --- 2026-09-21：把"改分析场"按通道标价，避免网络只用 msl（方法 E 下还有 z）去买 ZTD 拟合 ---
+#     J_B = increment_penalty_mu * mean_{c<69, 站点格} |x_a - x_b|_c / sigma_b,c
+# sigma_b,c 是背景误差的逐通道标准差（dataset/bg_err_std.npz，train 段统计）。
+# 实测（站点格）：z 族 0.026~0.067、msl 0.066、t 族 0.12、r 族 0.38~0.52 ——
+# 除以 sigma_b 后，动 z/msl 比动 r 贵 6~10 倍，修正会被推向热力与湿度廓线。
+# 0 = 关闭（旧行为）。
+increment_penalty_mu = 0.0
+increment_penalty_file = None          # None -> dataset/bg_err_std.npz
+increment_penalty_mode = 'station'     # 'station'（只在站点格统计）或 'all'
+# 方法 E 的层高与地面气压都来自网络输出（z / msl）；置 True 则改为取背景并 detach，
+# 即"柱几何是给定的"，只让热力/湿度廓线带梯度（等价于把两个廉价出口一起堵住）。
+obs_freeze_geometry = False
 
 # --------------------------------------------------------------------------
 # date ranges (6-hourly, half-open [start, end); format YYYYMMDDHH)
 # --------------------------------------------------------------------------
-dates_train_range = ['2022010100', '2024050100']
-dates_val_range = ['2024050100', '2025010100']
+dates_train_range = ['2022010100', '2024123100']
+dates_val_range = ['2025010100', '2025100100']
 dates_test_range = ['2025010100', '2025100100']
 
 # --------------------------------------------------------------------------
 # model
 # --------------------------------------------------------------------------
-# Should the network see FuXi's own precipitation as a *background* for the tp
-# channel?  Roughly: False -> bg = 69 state channels and tp is predicted from
-# scratch; True -> bg = 70 channels (state + FuXi tp), the residual
-# ``out = decoder + bg`` then covers tp too, and the background-only baseline
-# becomes a 70-channel number that is directly comparable with the model.
-# True requires a FuXi store built with ``--with-tp`` (70 channels), e.g.
-#   dataset/fuxi_europe_0p25_24h_70ch.zarr
 include_fuxi_tp = True
 model_bg_chans = 69 + int(include_fuxi_tp)   # kept in sync at run time from cfg
 model_out_chans = 70         # ERA5 69 + tp (residual on bg_chans channels)
-# The label store carries a 71st channel ``era5_tp`` (ERA5's own tp) that is
-# only used for evaluation/plots -- training reads just the first 70.
 label_n_chans = 70
 model_obs_chans = {'absolute': 1, 'residual': 1, 'both': 2}[obs_mode] \
                   + int(obs_add_mask) + 2 * int(obs_add_latlon)   # ztd/innov (+mask, lat, lon)
@@ -191,46 +138,19 @@ pin_memory = False
 amp = True                   # fp16 mixed precision + ShardedGradScaler
 save_interval = 1
 min_delta = 0.0              # val loss must improve by this much to (re)save
-log_interval = 100           # iterations between progress lines (0 = silent)
+log_interval = 10            # iterations between progress lines (0 = silent)
 log_batch_loss = False       # True: log the loss of *every* batch (rank 0) and
                              # save the per-iteration curve to iter_loss.npy
 
-loss_fn = mae()              # latitude-weighted, NaN-safe
-# --------------------------------------------------------------------------
-# spatial weighting of the loss (station cells get their own weight)
-# --------------------------------------------------------------------------
-# 1378 of the 9600 grid cells carry a GNSS station; the other 8222 have no
-# observation at all, so their residual is unpredictable and the loss can only
-# push the network back towards the background there -- which it then does
-# everywhere (the convolutions are shared).  Set loss_nostation_weight < 1 to
-# down-weight them.  (1.0, 1.0) reproduces the historical behaviour exactly.
-# The mask is the NGL store's static ``mask`` (True = *no* station) and its
-# polarity is verified at run time.  NOTE: plot_results.py keeps reporting the
-# *unweighted* metric on purpose, so runs with different weights stay comparable.
+# 标签损失的空间加权：True = 历史行为（cos lat，按均值归一化）；False = 全 1 权重，
+# 退化成普通逐格点等权 MAE。关掉之后 exp_tag 会多一个 `_nolat`，并且
+# loss_domain_weight_share 会自动改用纯格点比例（否则 lambda_obs 的域补偿会失准）。
+lat_weight = True
+loss_fn = mae(lat_weight=lat_weight)   # NaN-safe；纬度加权由上面的 lat_weight 控制
+
 loss_station_weight = 1.0
 loss_nostation_weight = 0.0   # 0 = cells outside the region carry no weight
 
-# Which spatial domain the LABEL loss is computed on (the observation-consistency
-# term is unaffected -- it already only sees the station cells):
-#   'full'         -- all 80x120 cells: the historical behaviour
-#   'station_halo' -- only loss_region_mask = the 1378 station cells dilated by
-#                     loss_halo_cells grid cells (square/Chebyshev halo).
-# Why: the analysis outside the halo cannot be constrained by the GNSS ZTD, so
-# the regression there can only drag the output back towards the background
-# field.  With halo=3 the region is 5778 of 9600 cells (60.2%), and after the
-# cos(lat) weighting it carries 58.7% of the loss weight.  Set
-# loss_nostation_weight to 0.0 (excluded entirely) or e.g. 0.1 (down-weighted).
-# NOTE: val-best is then selected on this weighted loss, and the full-grid
-# numbers in plot_results.py are no longer comparable with 'full' runs -- read
-# the station-cell column for those.
-# 2026-09-18 policy: 'station_halo' with loss_nostation_weight = 0 is the
-# permanent setup -- all future statistics are read on the region (and on the
-# station cells inside it), never on the full grid.  HANDOFF 13.4 showed the plain
-# version was a net loss for two separable reasons: the lambda_obs dilution
-# (now compensated by lambda_obs_domain_compensation) and the fact that the
-# discarded 39.8 % of the grid carried real learning signal.  The second one is
-# handled by keeping the *evaluation* honest (region + station + per-channel
-# tables) rather than by widening the loss back to the full grid.
 loss_domain = 'station_halo'
 loss_halo_cells = 3
 # early_stop = {'patience': 5, 'min_delta': 1e-4}

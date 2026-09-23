@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR, StepLR
 GRID_LAT = np.round(np.arange(36.50, 56.25 + 1e-9, 0.25), 6)
 
 __all__ = ["build_optimizer", "EarlyStopping", "WarmupScheduler", "mae", "mse",
-           "ObsConsistencyLoss", "GRID_LAT"]
+           "ObsConsistencyLoss", "IncrementPenalty", "GRID_LAT"]
 
 
 def build_optimizer(opt_type, learning_rate, weight_decay, model, scheduler,
@@ -83,22 +83,47 @@ class WarmupScheduler:
 class _LatWeightedLoss(nn.Module):
     """Latitude-weighted (cos lat, mean-normalised) MAE / MSE over all channels.
 
+    ``lat_weight=False`` 关掉纬度加权（权重全 1，退化成逐格点等权）。
+
     An optional per-cell weight map (``set_cell_weight``) is multiplied on top of
     the latitude weight -- used to down-weight the 8222 grid cells that carry no
     GNSS station, where the background error is unpredictable and the loss only
     pushes the output back towards the background.
     """
 
-    def __init__(self, lat=None, kind='mae', ignore_nan=True):
+    def __init__(self, lat=None, kind='mae', ignore_nan=True, lat_weight=True):
         super().__init__()
-        lat = GRID_LAT if lat is None else np.asarray(lat, dtype=np.float32)
-        w = torch.cos(torch.deg2rad(torch.as_tensor(lat, dtype=torch.float32)))
-        w = w / w.mean()
-        self.register_buffer('wlat', w.view(1, 1, -1, 1))
+        self.lat_deg = np.asarray(GRID_LAT if lat is None else lat, dtype=np.float32)
+        self.lat_weight = bool(lat_weight)
+        self.register_buffer('wlat', self._lat_weights(self.lat_deg, self.lat_weight))
         self.register_buffer('cellw', torch.ones(1, 1, 1, 1))
         self.has_cellw = False
         self.kind = kind
         self.ignore_nan = ignore_nan
+
+    @staticmethod
+    def _lat_weights(lat_deg, lat_weight: bool = True):
+        """(1, 1, H, 1) 的纬度权重。
+
+        ``lat_weight=False`` 时权重恒为 1，除以均值后还是 1 -- 加权平均就退化成
+        普通的逐格点等权 MAE，等于把纬度加权关掉。
+        """
+        lat = np.asarray(lat_deg, dtype=np.float32).reshape(-1)
+        if lat_weight:
+            w = torch.cos(torch.deg2rad(torch.as_tensor(lat, dtype=torch.float32)))
+        else:
+            w = torch.ones(lat.size, dtype=torch.float32)
+        return (w / w.mean()).view(1, 1, -1, 1)
+
+    def set_lat_weight(self, on: bool):
+        """开关纬度加权。
+
+        configs.py 是在 import 时就把 ``loss_fn`` 建好的，而 ``--set lat_weight=...``
+        在那之后才生效，所以由 train_FSDP.init_dist 调这个把实例同步过来。
+        """
+        self.lat_weight = bool(on)
+        self.register_buffer('wlat', self._lat_weights(self.lat_deg, self.lat_weight))
+        return self
 
     def set_cell_weight(self, weight):
         """(H, W) array of non-negative cell weights; all ones reproduces the
@@ -136,13 +161,13 @@ class _LatWeightedLoss(nn.Module):
 
 
 class mae(_LatWeightedLoss):
-    def __init__(self, lat=None, ignore_nan=True):
-        super().__init__(lat, 'mae', ignore_nan)
+    def __init__(self, lat=None, ignore_nan=True, lat_weight=True):
+        super().__init__(lat, 'mae', ignore_nan, lat_weight)
 
 
 class mse(_LatWeightedLoss):
-    def __init__(self, lat=None, ignore_nan=True):
-        super().__init__(lat, 'mse', ignore_nan)
+    def __init__(self, lat=None, ignore_nan=True, lat_weight=True):
+        super().__init__(lat, 'mse', ignore_nan, lat_weight)
 
 
 class ObsConsistencyLoss(nn.Module):
@@ -189,3 +214,57 @@ class ObsConsistencyLoss(nn.Module):
         mae = err.sum() / valid.sum().clamp_min(1)
         self.last_mae_mm = float(mae.detach())
         return self.weight * mae / self.sigma_o_mm
+
+
+class IncrementPenalty(nn.Module):
+    """逐通道增量惩罚（对角 B 的软约束，HANDOFF 12.8 item 1b）。
+
+        J_B = mu * mean_{c in 状态通道} ( mean_{cells} |x_a - x_b|_c ) / sigma_b,c
+
+    ``sigma_b,c`` 是**背景误差**的逐通道标准差（``dataset/bg_err_std.npz``，
+    由 ``preprocessing/build_bg_err_std.py`` 在 train 段统计）。因为 store 已经用
+    气候态 std 标准化过，若直接用气候态 std 会让每个通道都等于 1、失去区分度；
+    用背景误差 std 才能表达"这个通道动这么多算不算多"。
+
+    实测（站点格）：z 族 0.026~0.067、msl 0.066、t 族 0.12、r 族 0.38~0.52。
+    也就是说 msl 和 z 是"最便宜"的两个出口——正是网络拿来买 ZTD 拟合的杠杆。
+    除以 sigma_b,c 之后，动 1 个单位的 z/msl 比动 1 个单位的 r 贵 6~10 倍，
+    于是观测一致性要求的修正会被推向热力与湿度廓线。
+
+    ``mask``（(H,W) 或 None）限制统计的格点；默认由 train_FSDP 传站点格掩膜，
+    因为 ZTD 约束只在站格上起作用。
+    """
+
+    def __init__(self, sigma_b, weight=1.0, channel_slice=slice(0, 69), mask=None):
+        super().__init__()
+        sig = torch.as_tensor(np.asarray(sigma_b, dtype=np.float32))
+        self.register_buffer("sigma", sig)
+        self.weight = float(weight)
+        self.ch0 = 0 if channel_slice.start is None else int(channel_slice.start)
+        self.ch1 = int(channel_slice.stop)
+        if mask is None:
+            self.mask = None
+        else:
+            self.register_buffer("mask", torch.as_tensor(np.asarray(mask, dtype=np.float32)))
+        self.last = float("nan")
+
+    def forward(self, analysis, background):
+        a = analysis.float()
+        b = background.float()
+        if a.dim() == 5:
+            a = a[:, 0]
+            b = b[:, 0]
+        d = (a[:, self.ch0:self.ch1] - b[:, self.ch0:self.ch1]).abs()
+        if self.mask is not None:
+            m = self.mask.view(1, 1, *self.mask.shape).to(d.device)
+            d = d * m
+            # 每个通道的样本数 = batch × 掩膜内格点数（2026-09-21 修正：原来漏了 batch 维，
+            # 导致惩罚被低估约 batch 倍；batch=2 时实测小 33.8 倍）
+            denom = d.shape[0] * m.sum()
+        else:
+            denom = d.shape[0] * d.shape[2] * d.shape[3]
+        per_chan = d.sum(dim=(0, 2, 3)) / denom.clamp_min(1.0)
+        sig = self.sigma[self.ch0:self.ch1].to(per_chan.device).clamp_min(1e-6)
+        val = (per_chan / sig).mean()
+        self.last = float(val.detach())
+        return self.weight * val

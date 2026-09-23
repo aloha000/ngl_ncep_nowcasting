@@ -109,7 +109,6 @@ da_ngl/
 | 类别 | 文件 |
 | --- | --- |
 | 数据生产辅助 | `map_stations_to_grid.py`（实际建站点映射用的就是它） |
-| 独立基线 | `linear_da_baseline.py` / `linear_da_baseline_6h.py`（线性 Kalman，站内 69ch +0.376%，是网络的靶子） |
 | 算子校验 | `preprocessing/check_ztd_operator.py`、`preprocessing/check_ztd_torch.py` |
 | 观测检验 | `verify_surf_obs.py`、`verify_surf_obs_with_analysis.py`、`check_ztd_from_surf_obs.py`、`check_ztd_from_analysis.py`、`plot_surf_obs_stations.py` |
 | 可视化 | `plot_channel_improvement.py`、`plot_stations_on_map.py`、`plot_ngl_grid_stations.py`、`plot_grid_map_points.py` |

@@ -60,7 +60,9 @@ def main():
 
     cfg = apply_overrides(args.configs, args.set)
     lead = int(cfg.fcst_step) * 6
-    ztd_path = args.ztd_store or Path(DATASET_DIR) / f"ztd_fuxi_europe_0p25_{lead}h.zarr"
+    # 默认跟 configs 走（方法 E 之后库名带 _zdz），避免比到旧实现产出的库
+    ztd_path = args.ztd_store or Path(getattr(cfg, "ztd_fuxi_zarr",
+                                             Path(DATASET_DIR) / f"ztd_fuxi_europe_0p25_{lead}h.zarr"))
 
     gf = zarr.open(str(cfg.fuxi_zarr), "r")
     zf = zarr.open(str(ztd_path), "r")
@@ -148,11 +150,15 @@ def grad_check(cfg, bg_np):
               if nm.startswith(("z", "u", "v")))
     zop_f = sum(g_frozen[CHANNELS.index(nm)] for nm in CHANNELS
                 if nm.startswith(("z", "u", "v")))
-    print(f"z/u/v (the operator does not read these): plain {zop:.1f}, frozen {zop_f:.1f}")
+    print(f"z* (method E 下算子会读 z 当层高；frozen 时应为 0): "
+          f"plain {zop:.1f}, frozen {zop_f:.1f}")
+    q = lambda g, nm: g[CHANNELS.index(nm)]
+    print(f"u*/v* (算子始终不读): plain {sum(q(g_plain, nm) for nm in CHANNELS if nm.startswith(('u','v'))):.1f}")
 
     ok = (dmax < 1e-3 and g_frozen[CHANNELS.index("msl")] == 0.0
           and g_plain[CHANNELS.index("msl")] > 0.0
-          and g_frozen[CHANNELS.index("r700")] > 0.0)
+          and g_frozen[CHANNELS.index("r700")] > 0.0
+          and g_frozen[CHANNELS.index("z850")] == 0.0)
     print(f"[grad ] msl sensitivity {g_plain[CHANNELS.index('msl')]:.1f} -> "
           f"{g_frozen[CHANNELS.index('msl')]:.1f} "
           f"{'OK' if ok else '*** FAIL ***'}")

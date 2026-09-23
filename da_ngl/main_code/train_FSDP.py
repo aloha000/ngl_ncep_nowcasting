@@ -28,15 +28,30 @@ from torch.distributed.fsdp import (
 )
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
-from main.model import (AssimilationNetv6, EarlyStopping, ObsConsistencyLoss,
-                        StationZTD, WarmupScheduler, build_optimizer,
-                        get_parameter_number)
+from main.model import (AssimilationNetv6, EarlyStopping, IncrementPenalty,
+                        ObsConsistencyLoss, StationZTD, WarmupScheduler,
+                        build_optimizer, get_parameter_number)
 from main.utils import (arch_tag, bg_chans, build_dataloader, checkpoint_file,
                         create_logger, experiment_dir, exp_tag, load_checkpoint,
                         load_obs_debias, log_file, loss_domain_weight,
                         loss_domain_weight_share, loss_region_mask, model_id,
                         obs_chans, station_cell_weight)
+import wandb
 
+# Start a new wandb run to track this script.
+run = wandb.init(
+    # Set the wandb entity where your project will be logged (generally your team name).
+    entity="linan_nilan-shanghai-academy-of-ai4s",
+    # Set the wandb project where this run will be logged.
+    project="da_ngl",
+    # Track hyperparameters and run metadata.
+    config={
+        "learning_rate": 'active',
+        "architecture": "CNN",
+        "dataset": "fuxi",
+        "epochs": 36,
+    },
+)
 
 def init_dist(rank, configs, master_port, world_size, overrides=None):
     xconfig = importlib.import_module(configs)
@@ -49,6 +64,11 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
     if 'model_bg_chans' not in (overrides or {}):
         # include_fuxi_tp may have just been overridden -- keep it in sync too
         xconfig.model_bg_chans = bg_chans(xconfig)
+    # 纬度加权开关：--set lat_weight=false 是在 configs import 之后才生效的，
+    # 光改 cfg.lat_weight 不会重建已经建好的 loss_fn 实例，所以这里同步一次。
+    if hasattr(xconfig, 'loss_fn') and hasattr(xconfig.loss_fn, 'set_lat_weight'):
+        xconfig.loss_fn.set_lat_weight(bool(getattr(xconfig, 'lat_weight', True)))
+
     # per-cell weighting of the label loss: the historical station / no-station
     # split, and -- with loss_domain='station_halo' -- "only inside the station
     # mask dilated by loss_halo_cells".  No-op when every cell ends up at 1.0.
@@ -61,7 +81,8 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
         cw = loss_domain_weight(xconfig)
         xconfig.loss_fn.set_cell_weight(cw)
         _lat = np.asarray(getattr(xconfig, 'lat', []), dtype=float)
-        if _lat.size:                      # latitude-weighted share of the loss
+        _use_latw = bool(getattr(xconfig, 'lat_weight', True))
+        if _lat.size and _use_latw:         # latitude-weighted share of the loss
             _wl = np.cos(np.deg2rad(_lat))[:, None] * np.ones((1, cw.shape[1]))
             _st = cw == ws
             share = float((cw[_st] * _wl[_st]).sum() / (cw * _wl).sum())
@@ -73,7 +94,8 @@ def init_dist(rank, configs, master_port, world_size, overrides=None):
                      f': region {int(region.sum())}/{region.size} cells '
                      f'({100 * region.sum() / region.size:.1f}%), weights '
                      f'in={ws:g} out={wn:g} -> region holds {100 * share:.1f}% '
-                     f'of the loss weight')
+                     f'of the loss weight'
+                     + ('' if _use_latw else '  [lat_weight=off -> uniform cells]'))
 
     if rank == 0:
         os.makedirs(experiment_dir(xconfig), exist_ok=True)
@@ -207,12 +229,46 @@ def build_obs_loss(cfg, rank):
     return loss.to(rank)
 
 
+def build_increment_penalty(cfg, rank):
+    """逐通道增量惩罚（软约束）；``increment_penalty_mu <= 0`` 时返回 None。
+
+    分母 sigma_b,c 来自 ``dataset/bg_err_std.npz``（见 preprocessing/build_bg_err_std.py）。
+    作用格点默认是站点格：ZTD 观测约束只在那里起作用，而 msl/z 这两个"廉价出口"
+    的破坏也集中在那里。
+    """
+    mu = float(getattr(cfg, 'increment_penalty_mu', 0.0) or 0.0)
+    if mu <= 0:
+        return None
+    from main.utils import station_cell_mask
+    path = getattr(cfg, 'increment_penalty_file', None) or os.path.join(
+        os.path.dirname(str(cfg.ngl_zarr)), 'bg_err_std.npz')
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f'increment_penalty_mu={mu} 需要 {path}；'
+            f'先用 preprocessing/build_bg_err_std.py 生成')
+    d = np.load(path, allow_pickle=False)
+    sigma = np.asarray(d['sigma_station'], dtype=np.float32)
+    n_ch = int(getattr(cfg, 'model_out_chans', 70))
+    if sigma.size < n_ch:                      # 兜底：通道数不够时用中位数补齐
+        sigma = np.pad(sigma, (0, n_ch - sigma.size),
+                       constant_values=float(np.nanmedian(sigma)))
+    cfg.increment_penalty_sigma_file = path
+    mode = str(getattr(cfg, 'increment_penalty_mode', 'station')).lower()
+    mask = station_cell_mask(cfg) if mode == 'station' else None
+    pen = IncrementPenalty(sigma[:n_ch].copy(), weight=mu,
+                           channel_slice=slice(0, int(getattr(cfg, 'label_n_chans', 70)) - 1),
+                           mask=mask)
+    return pen.to(rank)
+
+
 def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
                     warmup_scheduler=None, scheduler=None):
     model.train()
     ddp_loss = torch.zeros(2).to(rank)
     ddp_oc = torch.zeros(3).to(rank)          # sum(term), sum(mae mm), count
+    ddp_pen = torch.zeros(2).to(rank)         # sum(term), count
     obs_loss = getattr(cfg, 'obs_loss', None)
+    inc_pen = getattr(cfg, 'inc_penalty', None)
     hw = getattr(cfg, 'grid_hw', None)
 
     time_start = time.perf_counter()
@@ -248,6 +304,11 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
         if obs_loss is not None:
             oc = obs_loss(batch_out, obs_valid, batch_fcst)
             loss = loss + oc
+        if inc_pen is not None:
+            pen = inc_pen(batch_out, batch_fcst)
+            loss = loss + pen
+            ddp_pen[0] += float(pen.detach())
+            ddp_pen[1] += 1
         if cfg.amp:
             grad_scaler.scale(loss).backward()
         else:
@@ -306,6 +367,10 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler,
         dist.all_reduce(ddp_oc, op=dist.ReduceOp.SUM)
         oc_note = (f'  [obs-consistency: term={ddp_oc[0] / ddp_oc[2].clamp_min(1):.4f}'
                    f' |H(xa)-obs|={ddp_oc[1] / ddp_oc[2].clamp_min(1):.2f} mm]')
+    if inc_pen is not None:
+        dist.all_reduce(ddp_pen, op=dist.ReduceOp.SUM)
+        oc_note += (f'  [increment penalty: term='
+                    f'{ddp_pen[0] / ddp_pen[1].clamp_min(1):.5f}]')
     if rank == 0:
         cfg.logger.info(f'[Epoch {getattr(cfg, "epoch", 0) + 1}] '
                         f'train loss={epoch_loss:.4f} (iteration {cfg.iteration}){oc_note}')
@@ -401,7 +466,8 @@ def save_checkpoint_fsdp(cfg, model, rank, optimizer=None, scheduler=None, val_l
                    'obs_sigma_o_mm': float(getattr(cfg, 'obs_sigma_o_mm', 11.0)),
                    'obs_debias': bool(getattr(cfg, 'obs_debias', False)),
                    'obs_res_scale_mm': float(getattr(cfg, 'obs_res_scale_mm', 0.0) or 0.0),
-                   'freeze_msl': bool(getattr(cfg, 'freeze_msl', False))}
+                   'freeze_msl': bool(getattr(cfg, 'freeze_msl', False)),
+                   'increment_penalty_mu': float(getattr(cfg, 'increment_penalty_mu', 0.0) or 0.0)}
         if optim_state is not None:
             payload['optimizer'] = optim_state
         if sched_state is not None:
@@ -433,6 +499,7 @@ def main(rank, configs, master_port, world_size, overrides=None):
     cfg.amp = bool(getattr(cfg, 'amp', True))
 
     cfg.obs_loss = build_obs_loss(cfg, rank)          # None unless lambda_obs > 0
+    cfg.inc_penalty = build_increment_penalty(cfg, rank)   # None unless mu > 0
     if rank == 0 and cfg.obs_loss is not None:
         cfg.logger.info(
             f'[ObsLoss] lambda={getattr(cfg, "lambda_obs", 0.0):g} '
@@ -442,6 +509,14 @@ def main(rank, configs, master_port, world_size, overrides=None):
             f'-> {cfg.obs_loss.weight / cfg.obs_loss.sigma_o_mm:.4f} per mm; '
             f'debias={cfg.obs_loss.bias is not None} '
             f'stations={cfg.obs_loss.operator.n_cell}')
+    if rank == 0 and cfg.inc_penalty is not None:
+        _s = cfg.inc_penalty.sigma
+        cfg.logger.info(
+            f'[IncPenalty] mu={cfg.inc_penalty.weight:g} '
+            f'channels=[0,{cfg.inc_penalty.ch1}) mask='
+            f'{"station" if cfg.inc_penalty.mask is not None else "all cells"} '
+            f'sigma median={float(_s.median()):.3f} '
+            f'(msl={float(_s[68]):.3f}, r700={float(_s[61]):.3f}, z500={float(_s[7]):.3f})')
 
     train_loader, val_loader, test_loader = make_loaders(cfg, world_size, rank)
     if rank == 0:
@@ -458,6 +533,7 @@ def main(rank, configs, master_port, world_size, overrides=None):
                               embed_dim=cfg.model_embed_dim,
                               depth=cfg.model_depth,
                               freeze_msl=bool(getattr(cfg, 'freeze_msl', False))).cuda(rank)
+
     if rank == 0:
         if getattr(cfg, 'freeze_msl', False):
             cfg.logger.info('[Model] freeze_msl: analysis msl (channel 68) = '
@@ -523,6 +599,7 @@ def main(rank, configs, master_port, world_size, overrides=None):
         loss_val = evaluate(cfg, model, rank, val_loader)
         cfg.loss_train.append(loss_train)
         cfg.loss_val.append(loss_val)
+        run.log({'train_loss':loss_train,'valloss':loss_val})
 
         # Only the best-val model is kept on disk.  Every rank evaluates the
         # same (all-reduced) val loss, and ``state_dict_type`` is collective,
@@ -549,6 +626,27 @@ def main(rank, configs, master_port, world_size, overrides=None):
 
         if cfg.iteration >= cfg.num_iteration:
             break
+
+    run.finish()
+    # 训练循环一结束就先把曲线与最小摘要落盘：收尾评估（载回 best + background-only
+    # + test）偶尔会失败/被杀，之前会导致 30+ 分钟的训练连 loss 曲线都没有。
+    # 这里先写一份 summary_train.json 与三个 npy，收尾评估若成功，末尾再覆盖成完整版。
+    if rank == 0:
+        np.save(os.path.join(experiment_dir(cfg), 'train_loss.npy'), np.array(cfg.loss_train))
+        np.save(os.path.join(experiment_dir(cfg), 'val_loss.npy'), np.array(cfg.loss_val))
+        np.save(os.path.join(experiment_dir(cfg), 'lr.npy'), np.array(cfg.lr))
+        if cfg.iter_loss:
+            np.save(os.path.join(experiment_dir(cfg), 'iter_loss.npy'),
+                    np.array(cfg.iter_loss, dtype=np.float32))
+        with open(os.path.join(experiment_dir(cfg), 'summary_train.json'), 'w') as fh:
+            json.dump({'model_id': model_id(cfg), 'exp_tag': exp_tag(cfg),
+                       'arch_tag': arch_tag(cfg),
+                       'best_val_loss': best_val, 'best_iteration': best_iter,
+                       'best_epoch': best_epoch,
+                       'train_loss': cfg.loss_train, 'val_loss': cfg.loss_val,
+                       'checkpoint': checkpoint_file(cfg), 'log': log_file(cfg),
+                       'note': '训练结束时写入；收尾评估失败时这是唯一的记录'},
+                      fh, indent=2, default=float)
 
     # Evaluate the *best* model, not whatever the last epoch left behind.
     ckpt = checkpoint_file(cfg)
@@ -580,6 +678,8 @@ def main(rank, configs, master_port, world_size, overrides=None):
         'obs_debias': bool(getattr(cfg, 'obs_debias', False)),
         'obs_res_scale_mm': float(getattr(cfg, 'obs_res_scale_mm', 0.0) or 0.0),
         'freeze_msl': bool(getattr(cfg, 'freeze_msl', False)),
+        'increment_penalty_mu': float(getattr(cfg, 'increment_penalty_mu', 0.0) or 0.0),
+        'obs_freeze_geometry': bool(getattr(cfg, 'obs_freeze_geometry', False)),
         'best_val_loss': best_val, 'best_iteration': best_iter, 'best_epoch': best_epoch,
         'train_loss': cfg.loss_train, 'val_loss': cfg.loss_val,
         'background_only_train': bg_train, 'background_only_val': bg_val,

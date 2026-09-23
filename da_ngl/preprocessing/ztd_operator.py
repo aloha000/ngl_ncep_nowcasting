@@ -47,6 +47,7 @@ import numpy as np
 __all__ = [
     "saturation_vapor_pressure", "vapor_pressure",
     "surface_pressure_from_msl", "ztd_surface", "ztd_profile",
+    "ztd_profile_surface", "ztd_profile_zdz", "zhd_top_correction",
     "elevation_from_etopo", "lev_pressure_hpa",
 ]
 
@@ -211,6 +212,93 @@ def ztd_profile_surface(t_levels, r_levels, t2m, sfc_pressure_hpa, height_m,
     zwd = 1e-6 * (R_D / G_0) * np.sum(0.5 * (integrand[..., 1:] + integrand[..., :-1])
                                       * dp, axis=-1)
     zhd = _zhd(p_s, latitude_deg, height_m)
+    return {"ZHD": zhd, "ZWD": zwd, "ZTD": zhd + zwd, "e_hpa": e_lev,
+            "e_sfc_hpa": e_sfc, "rh_surface": rh_low,
+            "ZHD_mm": zhd * 1000.0, "ZWD_mm": zwd * 1000.0, "ZTD_mm": (zhd + zwd) * 1000.0}
+
+
+# ---------------------------------------------------------------------------
+# 方法 E（2026-09-21 起成为默认实现）：在几何高度上梯形积分
+#   与 ztd_profile_surface（气压坐标）在数学上等价，差别只在积分坐标与格式：
+#   * 层高直接取 store 的位势通道 z* [m^2/s^2] ÷ g，不做静力重建；
+#   * 用梯形法（而不是"下层值×层厚"），13 层粗廓线上误差从 ~10% 降到 ~2%；
+#   * 补上 p_top(50 hPa) 以上那截干空气柱的解析贡献 ~113.7 mm；
+#   * 常数用 Bevis 1994 的 k1/k2/k3，k2' = k2 - (M_w/M_d)k1 = 22.98。
+# 与观测（NGL GNSS ZTD）对比：RMSE 12.0~12.4 mm，优于旧实现的 14.1~14.4 mm。
+# ---------------------------------------------------------------------------
+K1_BEVIS = 77.6890      # K/hPa
+K2_BEVIS = 71.2952      # K/hPa
+K3_BEVIS = 375463.0     # K^2/hPa
+EPS_MW_MD = 0.62198     # M_w / M_d
+
+
+def zhd_top_correction(p_top_hpa, k1=K1_BEVIS):
+    """p_top 以上那截干空气柱的解析贡献 [m]（约 0.00227 * p_top）。"""
+    return 1e-6 * k1 * (R_D / G_0) * float(p_top_hpa)
+
+
+def ztd_profile_zdz(t_levels, r_levels, t2m, sfc_pressure_hpa, height_m,
+                    z_levels_m, lev_hpa=LEV_HPA, over_ice=False,
+                    surface_rh="lowest", k1=K1_BEVIS, k2=K2_BEVIS,
+                    k3=K3_BEVIS, eps=EPS_MW_MD, top_correction=True):
+    """几何高度梯形积分版 ZTD [m]，返回与 :func:`ztd_profile_surface` 同结构的 dict。
+
+    参数
+    ----
+    t_levels, r_levels : (..., n_lev)  各气压层的温度 [K] / 相对湿度 [%]
+    t2m                : (...)          2 米温度 [K]
+    sfc_pressure_hpa   : (...)          地面气压 [hPa]（由 msl 按测高公式折算）
+    height_m           : (...)          测站高度 [m]
+    z_levels_m         : (..., n_lev)   各气压层的位势高度 [m]（store 的 z* ÷ g）
+
+    做法
+    ----
+    1. ``p >= p_s`` 的层塌缩到地面（高度置为 h_s、值换成地面值），层厚随之归零，
+       模式的地下外推不会进入积分；
+    2. 节点按"地面 + 由低到高的 13 层"排列，用梯形法对
+       ``N_h = k1(p-e)/T`` 与 ``N_w = (k2-eps*k1)e/T + k3 e/T^2`` 积分；
+    3. 再加上 ``p_top`` 以上的干空气柱解析修正。
+    """
+    t = np.asarray(t_levels, dtype=np.float64)
+    r = np.asarray(r_levels, dtype=np.float64)
+    p = np.asarray(lev_hpa, dtype=np.float64)
+    p_s = np.asarray(sfc_pressure_hpa, dtype=np.float64)
+    ts = np.asarray(t2m, dtype=np.float64)
+    hs = np.asarray(height_m, dtype=np.float64)
+    hz = np.asarray(z_levels_m, dtype=np.float64)
+    assert t.shape[-1] == r.shape[-1] == hz.shape[-1] == p.size, \
+        (t.shape, r.shape, hz.shape, p.size)
+
+    valid = p < p_s[..., None]
+    rev = valid[..., ::-1].argmax(axis=-1)
+    idx = np.where(valid.any(axis=-1), p.size - 1 - rev, p.size - 1)
+    take = lambda a: np.take_along_axis(a, idx[..., None], axis=-1)[..., 0]
+    rh_low = take(r) if surface_rh == "lowest" else r[..., -1]
+
+    e_sfc = vapor_pressure(ts, rh_low, temp_unit="K", over_ice=over_ice)
+    e_lev = vapor_pressure(t, r, temp_unit="K", over_ice=over_ice)
+
+    below = p >= p_s[..., None]
+    p_eff = np.where(below, p_s[..., None], p)
+    t_eff = np.where(below, ts[..., None], t)
+    e_eff = np.where(below, e_sfc[..., None], e_lev)
+    # 地下层的"高度"置为地面高度 -> 层厚 0（NaN 也一并换成地面值，避免 NaN 传播）
+    h_eff = np.where(below, hs[..., None], hz)
+
+    # 由下往上：地面节点 + 反序的 13 层
+    P = np.concatenate([p_s[..., None], p_eff[..., ::-1]], axis=-1)
+    T = np.concatenate([ts[..., None], t_eff[..., ::-1]], axis=-1)
+    E = np.concatenate([e_sfc[..., None], e_eff[..., ::-1]], axis=-1)
+    H = np.concatenate([hs[..., None], h_eff[..., ::-1]], axis=-1)
+
+    N_h = k1 * (P - E) / T
+    N_w = (k2 - eps * k1) * (E / T) + k3 * (E / T ** 2)
+    dh = np.maximum(np.diff(H, axis=-1), 0.0)
+    zhd = 1e-6 * np.sum(0.5 * (N_h[..., 1:] + N_h[..., :-1]) * dh, axis=-1)
+    zwd = 1e-6 * np.sum(0.5 * (N_w[..., 1:] + N_w[..., :-1]) * dh, axis=-1)
+    if top_correction:
+        zhd = zhd + zhd_top_correction(p[0], k1)
+
     return {"ZHD": zhd, "ZWD": zwd, "ZTD": zhd + zwd, "e_hpa": e_lev,
             "e_sfc_hpa": e_sfc, "rh_surface": rh_low,
             "ZHD_mm": zhd * 1000.0, "ZWD_mm": zwd * 1000.0, "ZTD_mm": (zhd + zwd) * 1000.0}

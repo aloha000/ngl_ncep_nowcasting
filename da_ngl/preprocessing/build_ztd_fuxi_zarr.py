@@ -47,7 +47,7 @@ sys.path.insert(0, str(HERE))
 
 from common import CHANNELS, DATASET_DIR, era5_channel_stats, finalize_store  # noqa: E402
 from ztd_operator import (G_0, LEV_HPA, R_D, elevation_from_etopo,  # noqa: E402
-                          ztd_profile_surface)
+                          ztd_profile_surface, ztd_profile_zdz)
 
 _STORE_CACHE = {}
 _BLOCK_OUT = {}
@@ -55,7 +55,7 @@ _BLOCK_OUT = {}
 
 def _prepare(configs):
     """Per-process setup: open stores once, expose the station cells."""
-    global _T_CH, _R_CH, _I_T2M, _I_MSL, _MEAN, _STD, _IY, _IX, _H, _CELLS, _H_GRID, _LAT_GRID
+    global _T_CH, _R_CH, _Z_CH, _I_T2M, _I_MSL, _MEAN, _STD, _IY, _IX, _H, _CELLS, _H_GRID, _LAT_GRID
     cfg = importlib.import_module(configs)
     gf = zarr.open(cfg.fuxi_zarr, "r")
     dsit = Path(cfg.ngl_zarr).parent
@@ -70,6 +70,8 @@ def _prepare(configs):
     _H = cells["height_m"].values.astype(float)
     _T_CH = [CHANNELS.index(f"t{int(L)}") for L in LEV_HPA]
     _R_CH = [CHANNELS.index(f"r{int(L)}") for L in LEV_HPA]
+    # 方法 E 还需要各层的位势高度（store 的 z* 通道，m^2/s^2，用前除以 g）
+    _Z_CH = [CHANNELS.index(f"z{int(L)}") for L in LEV_HPA]
     _I_T2M, _I_MSL = CHANNELS.index("t2m"), CHANNELS.index("msl")
     m, s = era5_channel_stats()
     _MEAN, _STD = m[:69], s[:69]
@@ -90,17 +92,18 @@ def _block(bg_idx):
     need the (n_t, n_cell, n_cell) outer product instead).
     """
     gf = _STORE_CACHE["gf"]
-    chans = _T_CH + _R_CH + [_I_T2M, _I_MSL]
-    raw = np.asarray(gf["z"].oindex[np.asarray(bg_idx), 0, chans])      # (b, 28, H, W)
+    chans = _T_CH + _R_CH + [_I_T2M, _I_MSL] + _Z_CH                    # 13+13+2+13 = 41
+    raw = np.asarray(gf["z"].oindex[np.asarray(bg_idx), 0, chans])      # (b, 41, H, W)
     ph = _MEAN[chans][None, :, None, None] + _STD[chans][None, :, None, None] * raw
     h2 = _H_GRID[None]                                                  # (1, H, W)
     T_lev = ph[:, :13].transpose(0, 2, 3, 1)                            # (b, H, W, 13)
     R_lev = ph[:, 13:26].transpose(0, 2, 3, 1)
     t2m, msl = ph[:, 26], ph[:, 27]
+    Z_lev = (ph[:, 28:41] / G_0).transpose(0, 2, 3, 1)                  # 位势 -> 几何高度 [m]
     p_s = msl / 100.0 * np.exp(-G_0 * h2 / (R_D * t2m))
-    lat2 = np.asarray(_LAT_GRID)[None]
-    out = ztd_profile_surface(T_lev, R_lev, t2m, p_s, np.broadcast_to(h2, p_s.shape),
-                              np.broadcast_to(lat2, p_s.shape))
+    # 方法 E：几何高度梯形积分 + p_top 以上干空气柱修正（不再需要纬度）
+    out = ztd_profile_zdz(T_lev, R_lev, t2m, p_s,
+                          np.broadcast_to(h2, p_s.shape), Z_lev)
     return out["ZHD_mm"], out["ZWD_mm"], out["ZTD_mm"], p_s
 
 
@@ -209,7 +212,8 @@ def main():
 
     z.attrs.update({
         "title": "FuXi-implied zenith total delay on the unified 0.25 deg grid",
-        "operator": "ztd_profile_surface (13 ERA5 levels + surface node at p_s)",
+        "operator": "ztd_profile_zdz (method E: trapezoid in geometric height, "
+                    "layer heights from the z channels, plus the p_top dry-column term)",
         "background": "FuXi 6 h forecast, init = T - 6 h (label time axis)",
         "units": "mm", "fill_value": "NaN outside the station cells",
         "levels_hpa": list(map(int, LEV_HPA)),

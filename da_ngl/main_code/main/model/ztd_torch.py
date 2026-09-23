@@ -38,7 +38,8 @@ if str(_PREPROC) not in sys.path:
     sys.path.insert(0, str(_PREPROC))
 
 from common import CHANNELS, era5_channel_stats  # noqa: E402
-from ztd_operator import G_0, K2_PRIME, K3, LEV_HPA, R_D, ZHD_COEF  # noqa: E402
+from ztd_operator import (EPS_MW_MD, G_0, K1_BEVIS, K2_BEVIS, K2_PRIME, K3,  # noqa: E402
+                          K3_BEVIS, LEV_HPA, R_D, ZHD_COEF)
 
 __all__ = ["vapor_pressure_torch", "zhd_zwd_torch", "ztd_profile_surface_torch",
            "StationZTD", "OP_CHANNELS", "LEV_HPA"]
@@ -46,8 +47,11 @@ __all__ = ["vapor_pressure_torch", "zhd_zwd_torch", "ztd_profile_surface_torch",
 # the 28 state channels the operator reads, in the order it wants them
 T_LEVEL_CHANNELS = [CHANNELS.index(f"t{int(L)}") for L in LEV_HPA]      # 13..25
 R_LEVEL_CHANNELS = [CHANNELS.index(f"r{int(L)}") for L in LEV_HPA]      # 52..64
+Z_LEVEL_CHANNELS = [CHANNELS.index(f"z{int(L)}") for L in LEV_HPA]      # 0..12
 T2M_CHANNEL, MSL_CHANNEL = CHANNELS.index("t2m"), CHANNELS.index("msl")  # 65, 68
-OP_CHANNELS = T_LEVEL_CHANNELS + R_LEVEL_CHANNELS + [T2M_CHANNEL, MSL_CHANNEL]
+# 方法 E（默认）：13 层 t + 13 层 r + t2m + msl + 13 层 z（位势 -> 层高）
+OP_CHANNELS = (T_LEVEL_CHANNELS + R_LEVEL_CHANNELS + [T2M_CHANNEL, MSL_CHANNEL]
+               + Z_LEVEL_CHANNELS)
 
 N_LEV = len(LEV_HPA)
 _LEV_TENSOR = np.asarray(LEV_HPA, dtype=np.float64)
@@ -122,6 +126,56 @@ def ztd_profile_surface_torch(t_lev, r_lev, t2m, p_s, height_m, lat_deg,
     return zhd + zwd
 
 
+def zdz_torch(t_lev, r_lev, t2m, p_s, height_m, z_lev_m,
+              lev_hpa=None, over_ice: bool = False,
+              k1=K1_BEVIS, k2=K2_BEVIS, k3=K3_BEVIS, eps=EPS_MW_MD,
+              top_correction: bool = True):
+    """方法 E 的可微实现：在几何高度上梯形积分，返回 ``(ZHD, ZWD)`` [m]。
+
+    与 ``preprocessing/ztd_operator.ztd_profile_zdz`` 逐项对应：
+
+    * ``p >= p_s`` 的层塌缩到地面（高度置 h_s、值换成地面值），层厚归零；
+    * 节点按 "地面 + 由低到高的 13 层" 排列；
+    * ``N_h = k1(p-e)/T``、``N_w = (k2-eps*k1)e/T + k3 e/T^2``，梯形积分；
+    * 加上 ``p_top`` 以上的干空气柱解析项 ``1e-6*k1*(R_d/g)*p_top``。
+
+    形状：``t_lev/r_lev/z_lev_m`` 为 ``(..., n_lev)``，其余为 ``(...)``。
+    """
+    p = torch.as_tensor(np.asarray(LEV_HPA if lev_hpa is None else lev_hpa, dtype=np.float64),
+                        dtype=t_lev.dtype, device=t_lev.device)
+    n_lev = p.numel()
+
+    valid = p < p_s.unsqueeze(-1)                     # (..., n_lev) 地面之上
+    rev = valid.flip(-1).to(torch.int64).argmax(dim=-1)
+    idx = torch.where(valid.any(dim=-1), n_lev - 1 - rev, torch.full_like(rev, n_lev - 1))
+    rh_low = torch.gather(r_lev, -1, idx.unsqueeze(-1)).squeeze(-1)
+
+    e_sfc = vapor_pressure_torch(t2m, rh_low, over_ice)
+    e_lev = vapor_pressure_torch(t_lev, r_lev, over_ice)
+
+    below = ~valid
+    p_eff = torch.where(below, p_s.unsqueeze(-1), p)
+    t_eff = torch.where(below, t2m.unsqueeze(-1), t_lev)
+    e_eff = torch.where(below, e_sfc.unsqueeze(-1), e_lev)
+    h_eff = torch.where(below, height_m.unsqueeze(-1), z_lev_m)
+
+    flip = lambda a: a.flip(-1)
+    P = torch.cat([p_s.unsqueeze(-1), flip(p_eff)], dim=-1)
+    T = torch.cat([t2m.unsqueeze(-1), flip(t_eff)], dim=-1)
+    E = torch.cat([e_sfc.unsqueeze(-1), flip(e_eff)], dim=-1)
+    H = torch.cat([height_m.unsqueeze(-1), flip(h_eff)], dim=-1)
+
+    N_h = k1 * (P - E) / T
+    N_w = (k2 - eps * k1) * (E / T) + k3 * (E / T ** 2)
+    dh = (H[..., 1:] - H[..., :-1]).clamp_min(0)
+    zhd = 1e-6 * ((N_h[..., 1:] + N_h[..., :-1]) * 0.5 * dh).sum(dim=-1)
+    zwd = 1e-6 * ((N_w[..., 1:] + N_w[..., :-1]) * 0.5 * dh).sum(dim=-1)
+    if top_correction:
+        zhd = zhd + 1e-6 * k1 * (R_D / G_0) * float(np.asarray(lev_hpa if lev_hpa is not None
+                                                               else LEV_HPA)[0])
+    return zhd, zwd
+
+
 class StationZTD(nn.Module):
     """``H``: analysis field -> GNSS ZTD [mm] at the 1378 station cells.
 
@@ -151,7 +205,7 @@ class StationZTD(nn.Module):
     the flag changes only *which* channels the observation can move.
     """
 
-    def __init__(self, cfg, freeze_zhd=None):
+    def __init__(self, cfg, freeze_zhd=None, freeze_geometry=None):
         super().__init__()
         from ..utils.utils import station_geometry
 
@@ -165,6 +219,17 @@ class StationZTD(nn.Module):
         self.n_cell = int(iy.size)
         self.freeze_zhd = (bool(getattr(cfg, 'obs_freeze_zhd', False))
                            if freeze_zhd is None else bool(freeze_zhd))
+        # freeze_geometry: 层高与地面气压都取自背景（detach），只让热力/湿度廓线带梯度。
+        # 方法 E 的层高来自 z 通道，而 z 是网络输出之一，若不冻结就等于开了一个新杠杆。
+        # 兼容旧名：obs_freeze_zhd=True 等价于冻结几何，freeze_zhd 参数同理。
+        fg = freeze_geometry
+        if fg is None:
+            fg = getattr(cfg, 'obs_freeze_geometry', None)
+        if fg is None:
+            fg = getattr(cfg, 'obs_freeze_zhd', False)
+        if freeze_zhd is True:
+            fg = True
+        self.freeze_geometry = bool(fg)
         self.station_id = [str(s) for s in station_id]
         self.register_buffer("iy", torch.as_tensor(iy, dtype=torch.long))
         self.register_buffer("ix", torch.as_tensor(ix, dtype=torch.long))
@@ -196,22 +261,27 @@ class StationZTD(nn.Module):
         return msl / 100.0 * torch.exp(-G_0 * h / (R_D * t2m))
 
     def forward(self, analysis, background=None):
+        """方法 E：ZTD [mm] = 几何高度梯形积分(ZHD) + 湿项积分 + 顶层干柱修正。"""
         ph = self._physics(analysis)
         t_lev = ph[:, :N_LEV].transpose(1, 2)                   # (B, n_cell, 13)
         r_lev = ph[:, N_LEV:2 * N_LEV].transpose(1, 2)
-        t2m = ph[:, 2 * N_LEV]                                  # (B, n_cell)
+        t2m = ph[:, 2 * N_LEV]
+        z_lev = ph[:, 2 * N_LEV + 2:].transpose(1, 2) / G_0     # 位势 -> 层高 [m]
 
-        h = self.height_m.view(1, -1)
-        lat = self.lat_deg.view(1, -1)
-        if self.freeze_zhd:
+        # h 要扩到 batch 维，后面要跟 (B, n_cell, n_lev) 做 cat
+        h = self.height_m.view(1, -1).expand(ph.shape[0], -1)
+        p_s = self._surface_pressure(ph, h)
+
+        if self.freeze_geometry:
             if background is None:
-                raise ValueError('StationZTD(freeze_zhd=True) needs ``background`` '
-                                 'to take the hydrostatic part from')
-            # detached: the pressure field is a given, not something the ZTD
-            # observation is allowed to trade against
-            p_s = self._surface_pressure(self._physics(background), h).detach()
-        else:
-            p_s = self._surface_pressure(ph, h)
+                raise ValueError('StationZTD(freeze_geometry=True) needs ``background``')
+            ph_bg = self._physics(background)
+            t2m_bg = ph_bg[:, 2 * N_LEV]
+            msl_bg = ph_bg[:, 2 * N_LEV + 1]
+            # 层高与地面气压都来自背景，且 detached：柱几何是给定的，
+            # 观测一致性不允许通过改 z 或 msl 去"买"ZTD 拟合。
+            z_lev = (ph_bg[:, 2 * N_LEV + 2:].transpose(1, 2) / G_0).detach()
+            p_s = (msl_bg / 100.0 * torch.exp(-G_0 * h / (R_D * t2m_bg))).detach()
 
-        zhd, zwd = zhd_zwd_torch(t_lev, r_lev, t2m, p_s, h, lat)
+        zhd, zwd = zdz_torch(t_lev, r_lev, t2m, p_s, h, z_lev)
         return (zhd + zwd) * 1000.0

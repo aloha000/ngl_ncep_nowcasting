@@ -56,6 +56,8 @@ def exp_tag(cfg):
         tag += f'_w{ws:g}-{wn:g}'
     if str(getattr(cfg, 'loss_domain', 'full')).lower() == 'station_halo':
         tag += f'_halo{int(getattr(cfg, "loss_halo_cells", 0) or 0)}'
+    if not bool(getattr(cfg, 'lat_weight', True)):
+        tag += '_nolat'
     if getattr(cfg, 'include_fuxi_tp', False):
         tag += '_bgtp'
     if getattr(cfg, 'zero_obs', False):
@@ -68,6 +70,11 @@ def exp_tag(cfg):
         tag += '_obsstd'
     if getattr(cfg, 'freeze_msl', False):
         tag += '_frmsl'
+    if bool(getattr(cfg, 'obs_freeze_geometry', False)):
+        tag += '_frgeom'
+    _mu = float(getattr(cfg, 'increment_penalty_mu', 0.0) or 0.0)
+    if _mu:
+        tag += f'_inc{_mu:g}'
     lam = float(getattr(cfg, 'lambda_obs', 0.0) or 0.0)
     if lam:
         tag += f'_oc{lam:g}'
@@ -180,7 +187,9 @@ def loss_domain_weight_share(cfg):
 
     cw = loss_domain_weight(cfg).astype(np.float64)
     lat = np.asarray(getattr(cfg, 'lat', []), dtype=np.float64)
-    if lat.size == cw.shape[0]:
+    # 注意：损失里的纬度加权关掉之后（lat_weight=False），这里的份额也要跟着
+    # 变成纯格点比例，否则 lambda_obs 的域补偿会按错误的 share 缩放。
+    if bool(getattr(cfg, 'lat_weight', True)) and lat.size == cw.shape[0]:
         wl = np.cos(np.deg2rad(lat))[:, None] * np.ones((1, cw.shape[1]))
     else:
         wl = np.ones_like(cw)
@@ -291,6 +300,9 @@ def obs_debias_grid(cfg):
     grid = np.zeros(shape, dtype=np.float32)
     grid[iy, ix] = bias
     return grid
+
+
+
 
 
 def arch_tag(cfg):

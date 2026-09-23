@@ -277,5 +277,4 @@ flowchart TB
 | --- | --- |
 | `preprocessing/check_ztd_operator.py` | numpy 版 ZTD 算子 vs NGL 实测（总延迟 RMSE 14.3 毫米，距平 RMSE 12.1 毫米） |
 | `preprocessing/check_ztd_torch.py` | torch 版算子 vs 已建 store（最大差 0.0007 毫米）；冻结静力项时 msl 梯度为 0 |
-| `test/linear_da_baseline.py` / `_6h.py` | 线性卡尔曼增益基线（站内 69 通道 +0.376%，是网络要追平的目标） |
 | `test/plot_channel_improvement.py` | 把单个实验的逐通道改善画成图 |
