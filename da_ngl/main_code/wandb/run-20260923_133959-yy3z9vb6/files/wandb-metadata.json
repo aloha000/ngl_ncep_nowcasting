@@ -1,0 +1,58 @@
+{
+  "os": "Linux-3.10.0-1160.el7.x86_64-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.15",
+  "startedAt": "2026-09-23T05:39:59.886567Z",
+  "args": [
+    "--configs",
+    "configs",
+    "--master_port",
+    "22336"
+  ],
+  "program": "<python with no main file>",
+  "git": {
+    "remote": "git@github.com:aloha000/ngl_ncep_nowcasting.git",
+    "commit": "9f510b1cc4aa12f809b2a1b65dc8b22c357edd8c"
+  },
+  "email": "linan@sais.org.cn",
+  "root": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code",
+  "host": "dsw-38808-797f6b6dc5-x549x",
+  "executable": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/bin/python",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "gpu_count": 3,
+  "disk": {
+    "/": {
+      "total": "3838879215616",
+      "used": "437877514240"
+    }
+  },
+  "memory": {
+    "total": "2161728667648"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA A100-SXM4-80GB",
+      "memoryTotal": "85899345920",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-f90e545c-16a4-bc66-ec48-0108d0c46acc"
+    },
+    {
+      "name": "NVIDIA A100-SXM4-80GB",
+      "memoryTotal": "85899345920",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-d689717f-9bb9-00f7-0787-4415b62b2d2a"
+    },
+    {
+      "name": "NVIDIA A100-SXM4-80GB",
+      "memoryTotal": "85899345920",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-3b04f536-99de-ac8f-808f-8c8ef877f823"
+    }
+  ],
+  "cudaVersion": "12.4",
+  "writerId": "95q5bxa8gnet4b3tljbq6tn45aag5g0w"
+}

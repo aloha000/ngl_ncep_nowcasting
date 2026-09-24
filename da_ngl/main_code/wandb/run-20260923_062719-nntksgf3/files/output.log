@@ -1,0 +1,10 @@
+usage: train_FSDP.py [-h] [--configs CONFIGS] [--master_port MASTER_PORT]
+                     [--model_id MODEL_ID] [--set KEY=VALUE]
+
+options:
+  -h, --help            show this help message and exit
+  --configs CONFIGS
+  --master_port MASTER_PORT
+                        Local host addres
+  --model_id MODEL_ID   实验名；产物落在 {work_dir}/{model_id}/ 下
+  --set KEY=VALUE       覆盖 configs 里的设置，例：--set zero_obs=true

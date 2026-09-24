@@ -1,0 +1,109 @@
+2026-09-23 05:12:33,226 - INFO: [Work Dir]: ./work_smoke_ref
+[Configs]: configs_smoke_ref
+[Word Size is]: 1
+[Rank is]: 0
+[Device is]: 0
+[Seed is]: 2000
+[Dataset Time] ||| 2025-01-01 00:00:00 ~ 2025-01-02 00:00:00
+[Dataset Num] ||| 5
+[Dataset Time] ||| 2025-01-01 00:00:00 ~ 2025-01-02 00:00:00
+[Dataset Num] ||| 5
+
+2026-09-23 05:12:33,313 - INFO: [Ablation] zero_obs=True: ZTD 通道置零（只保留站点几何/掩膜）
+2026-09-23 05:12:33,313 - INFO: #############################Data Information##############################
+2026-09-23 05:12:33,313 - INFO: [Train Data Number]: 5
+[Train Batch Number]: 3
+[Train Batch Size]: 2
+2026-09-23 05:12:33,313 - INFO: [Val Data Number]: 5
+[Val Batch Number]: 3
+[Val Batch Size]: 2
+2026-09-23 05:12:33,314 - INFO: [Ablation] zero_obs=True: ZTD 通道置零（只保留站点几何/掩膜）
+2026-09-23 05:12:33,314 - INFO: #############################Data Information##############################
+2026-09-23 05:12:35,518 - INFO: [Model Parameter Numbe]: {'Total': 1137612.28125, 'Trainable': 1137612.28125}
+2026-09-23 05:12:35,519 - INFO: [Cuda Current Device]: 0
+/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/lib/python3.11/site-packages/torch/distributed/fsdp/_init_utils.py:444: UserWarning: FSDP is switching to use `NO_SHARD` instead of ShardingStrategy.SHARD_GRAD_OP since the world size is 1.
+  warnings.warn(
+2026-09-23 05:12:35,550 - INFO: [Warm Up]: 0
+2026-09-23 05:12:35,551 - INFO: [T Max]: 6
+2026-09-23 05:12:35,553 - INFO: [Epoch Iteration Number] ||| 3
+2026-09-23 05:13:03,841 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 1
+[Learning Rate]: 1e-08
+[Batch loss]: 0.4967
+[MaxMemory]: 5565.4150390625
+2026-09-23 05:13:03,842 - INFO: [Data Load Time]: 26.78
+[Data Proccess Time]: 0.08
+[Run Model Time]: 1.43
+
+2026-09-23 05:13:03,927 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 2
+[Learning Rate]: 1e-08
+[Batch loss]: 0.4958
+[MaxMemory]: 5565.4345703125
+2026-09-23 05:13:03,927 - INFO: [Data Load Time]: 0.00
+[Data Proccess Time]: 0.01
+[Run Model Time]: 0.08
+
+2026-09-23 05:13:04,063 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 3
+[Learning Rate]: 9.330127018922194e-09
+[Batch loss]: 0.5033
+[MaxMemory]: 5565.4345703125
+2026-09-23 05:13:04,063 - INFO: [Data Load Time]: 0.00
+[Data Proccess Time]: 0.00
+[Run Model Time]: 0.13
+
+2026-09-23 05:13:04,714 - INFO: [LOCAL_RANK]: 0]
+[Iteration]: 3
+[Learning Rate]: 7.500000000000001e-09]
+[Epoch loss]: 0.4986]
+[MaxMemory]: 5565.4345703125]
+2026-09-23 05:13:32,479 - INFO: ################################Evaluation#################################
+2026-09-23 05:13:32,480 - INFO: [LOCAL_RANK]: 0]
+[Iteration]: 3
+[Epoch loss]: 0.4985]
+[MaxMemory]: 5565.4345703125]
+[Get Fcst Loss]: False]
+2026-09-23 05:13:32,480 - INFO: ################################Evaluation#################################
+2026-09-23 05:13:35,731 - INFO: [Save Model] best val=0.4985 @ iter 3 -> ./work_smoke_ref/model/best.pth
+2026-09-23 05:13:35,739 - INFO: [Epoch Iteration Number] ||| 3
+2026-09-23 05:14:00,989 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 4
+[Learning Rate]: 7.500000000000001e-09
+[Batch loss]: 0.5006
+[MaxMemory]: 5565.4345703125
+2026-09-23 05:14:00,989 - INFO: [Data Load Time]: 25.16
+[Data Proccess Time]: 0.01
+[Run Model Time]: 0.09
+
+2026-09-23 05:14:01,335 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 5
+[Learning Rate]: 5e-09
+[Batch loss]: 0.4945
+[MaxMemory]: 5565.4345703125
+2026-09-23 05:14:01,335 - INFO: [Data Load Time]: 0.26
+[Data Proccess Time]: 0.01
+[Run Model Time]: 0.08
+
+2026-09-23 05:14:01,413 - INFO: [LOCAL_RANK]: 0
+[Iteration]: 6
+[Learning Rate]: 2.5000000000000013e-09
+[Batch loss]: 0.4972
+[MaxMemory]: 5565.4345703125
+2026-09-23 05:14:01,413 - INFO: [Data Load Time]: 0.00
+[Data Proccess Time]: 0.00
+[Run Model Time]: 0.07
+
+2026-09-23 05:14:02,040 - INFO: [LOCAL_RANK]: 0]
+[Iteration]: 6
+[Learning Rate]: 6.698729810778065e-10]
+[Epoch loss]: 0.4974]
+[MaxMemory]: 5565.4345703125]
+2026-09-23 05:14:29,416 - INFO: ################################Evaluation#################################
+2026-09-23 05:14:29,416 - INFO: [LOCAL_RANK]: 0]
+[Iteration]: 6
+[Epoch loss]: 0.4984]
+[MaxMemory]: 5565.4345703125]
+[Get Fcst Loss]: False]
+2026-09-23 05:14:29,417 - INFO: ################################Evaluation#################################
+2026-09-23 05:14:32,921 - INFO: [Save Model] best val=0.4984 @ iter 6 -> ./work_smoke_ref/model/best.pth

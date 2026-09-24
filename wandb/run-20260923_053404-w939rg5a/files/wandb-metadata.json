@@ -1,0 +1,38 @@
+{
+  "os": "Linux-3.10.0-1160.el7.x86_64-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.15",
+  "startedAt": "2026-09-23T05:34:04.149346Z",
+  "program": "<python with no main file>",
+  "git": {
+    "remote": "git@github.com:aloha000/ngl_ncep_nowcasting.git",
+    "commit": "9f510b1cc4aa12f809b2a1b65dc8b22c357edd8c"
+  },
+  "email": "linan@sais.org.cn",
+  "root": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss",
+  "host": "dsw-38521-54b6cb6cb5-gslvv",
+  "executable": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/bin/python",
+  "cpu_count": 64,
+  "cpu_count_logical": 128,
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "3838879215616",
+      "used": "714183139328"
+    }
+  },
+  "memory": {
+    "total": "2161728663552"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA A100-SXM4-80GB",
+      "memoryTotal": "85899345920",
+      "cudaCores": 6912,
+      "architecture": "Ampere",
+      "uuid": "GPU-78b0bd00-1977-cfdd-93a3-4c1d4ae79ab4"
+    }
+  ],
+  "cudaVersion": "12.4",
+  "writerId": "0uxkeiaaxqyvdzf40lvi0lnqcul9uc24"
+}

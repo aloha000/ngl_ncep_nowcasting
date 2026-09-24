@@ -1,0 +1,20 @@
+{
+  "os": "Linux-3.10.0-1160.el7.x86_64-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.15",
+  "startedAt": "2026-09-23T06:27:41.251872Z",
+  "args": [
+    "--help"
+  ],
+  "program": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code/train_FSDP.py",
+  "codePath": "da_ngl/main_code/train_FSDP.py",
+  "codePathLocal": "train_FSDP.py",
+  "git": {
+    "remote": "git@github.com:aloha000/ngl_ncep_nowcasting.git",
+    "commit": "9f510b1cc4aa12f809b2a1b65dc8b22c357edd8c"
+  },
+  "email": "linan@sais.org.cn",
+  "root": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code",
+  "host": "dsw-38521-54b6cb6cb5-gslvv",
+  "executable": "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/bin/python3",
+  "writerId": "7w82pu2w5m19hu3ek4462vc6s379sstn"
+}

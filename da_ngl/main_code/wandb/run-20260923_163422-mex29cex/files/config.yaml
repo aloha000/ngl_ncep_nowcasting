@@ -1,0 +1,70 @@
+_wandb:
+    value:
+        cli_version: 0.28.2
+        e:
+            pfklu2vldydro4tlbijhqddjq8c7aotq:
+                args:
+                    - --configs
+                    - configs
+                    - --master_port
+                    - "22336"
+                cpu_count: 64
+                cpu_count_logical: 128
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "3838879215616"
+                        used: "437941100544"
+                email: linan@sais.org.cn
+                executable: /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/cfff_linan/anaconda3/anaconda3/envs/gnss/bin/python
+                git:
+                    commit: 9f510b1cc4aa12f809b2a1b65dc8b22c357edd8c
+                    remote: git@github.com:aloha000/ngl_ncep_nowcasting.git
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 3
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-f90e545c-16a4-bc66-ec48-0108d0c46acc
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-d689717f-9bb9-00f7-0787-4415b62b2d2a
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-3b04f536-99de-ac8f-808f-8c8ef877f823
+                host: dsw-38808-797f6b6dc5-x549x
+                memory:
+                    total: "2161728667648"
+                os: Linux-3.10.0-1160.el7.x86_64-x86_64-with-glibc2.35
+                program: <python with no main file>
+                python: CPython 3.11.15
+                root: /cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/gnss/da_ngl/main_code
+                startedAt: "2026-09-23T08:34:22.577496Z"
+                writerId: pfklu2vldydro4tlbijhqddjq8c7aotq
+        m: []
+        python_version: 3.11.15
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 16
+            "4": 3.11.15
+            "5": 0.28.2
+            "12": 0.28.2
+            "13": linux-x86_64
+architecture:
+    value: CNN
+dataset:
+    value: mydata
+epochs:
+    value: 18
+learning_rate:
+    value: warmup
