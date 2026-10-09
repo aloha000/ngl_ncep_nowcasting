@@ -24,14 +24,23 @@ model_id = 'lead24h_allarea'
 # 消融开关：True 时把 ZTD 通道整片置零（= 训练均值），网络只看到站点几何/掩膜，
 zero_obs = False
 
+
+DATASET_DIR = ('/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/'
+               'gnss/da_ngl/dataset')
+# 额外输入一维：FuXi 隐含的 ZTD（方法 E 算子算好的物理量，单位 mm，只在站格有值）
+#   True  -> 观测张量变成 2 个通道：(NGL ZTD, FuXi ZTD)，两者用同一套 NGL mean/std 标准化；
+#            model_obs_chans 自动变成 4（2 个数据通道 + mask/lat/lon 侧通道是另算的）
+#   False -> 只有 NGL ZTD（原行为）
+# 注意：打开之后 obs_encoder 第一层的输入通道数变了，**旧的 checkpoint 不能直接用**。
+add_fuxi_ztd = True
+ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h_zdz.zarr'
+obs_channum = 1 + int(add_fuxi_ztd)
+
 # 标签损失的格点掩膜：
 #   'none'          全域（参考版行为）
 #   'station_halo'  只监督"有 ZTD 站的格点 + 周围 loss_halo_cells 格"（方形核）
 loss_mask = 'none'
 loss_halo_cells = 3
-
-DATASET_DIR = ('/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/linan/linan_dev/'
-               'gnss/da_ngl/dataset')
 
 era5_dir = f'{DATASET_DIR}/label_europe_0p25.zarr'
 fcst_dir = f'{DATASET_DIR}/fuxi_europe_0p25_24h_70ch.zarr'
@@ -41,7 +50,6 @@ fcst_step = 24
 
 obs_dir = f'{DATASET_DIR}/ngl_europe_0p25_5min.zarr'
 obs_stat_dir = obs_dir
-obs_channum = 1               # 观测只有 ZTD 一路
 obs_frames = 25               # 25 x 5 min = 分析时刻前 2 小时（原为 73=6 小时）
 obs_frame_minutes = 5         # NGL 原生采样间隔
 

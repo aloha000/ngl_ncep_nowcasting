@@ -56,7 +56,9 @@ def build_dataloader(world_size,
                      shuffle=True,
                      obs_frame_minutes=5,
                      grid_hw=(80, 120),
-                     seed=2000):
+                     seed=2000,
+                     add_fuxi_ztd=False,
+                     ztd_fuxi_zarr=None):
     dataset = MyDataset(era5_dir=era5_dir,
                         fcst_dir=fcst_dir,
                         fcst_step=fcst_step,
@@ -67,7 +69,9 @@ def build_dataloader(world_size,
                         dates_range=dates_range,
                         obs_frame_minutes=obs_frame_minutes,
                         grid_hw=grid_hw,
-                        seed=seed)
+                        seed=seed,
+                        add_fuxi_ztd=add_fuxi_ztd,
+                        ztd_fuxi_zarr=ztd_fuxi_zarr)
     if world_size > 1:
         sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
     else:
@@ -154,7 +158,8 @@ class read_obs:
     """
 
     def __init__(self, data_dir, stat_dir, data_frames, data_channum, drop_rate=0.0,
-                 frame_minutes=5, grid_hw=(80, 120)):
+                 frame_minutes=5, grid_hw=(80, 120),
+                 add_fuxi_ztd=False, ztd_fuxi_zarr=None):
         self.drop_rate = drop_rate
         self.data_frames = int(data_frames)
         self.data_channum = int(data_channum)
@@ -181,10 +186,28 @@ class read_obs:
         self.z_mu = float(np.nan_to_num(instrument_mean.reshape(-1)[0]))
         self.z_sd = float(np.nan_to_num(instrument_std.reshape(-1)[0]))
 
+        # 额外一维：FuXi 隐含 ZTD（物理量 mm，只在站格有值）。它和 NGL ZTD 用同一套
+        # mean/std 标准化（由 process_obs 完成），所以这里按 mm 原样给出。
+        self.add_fuxi_ztd = bool(add_fuxi_ztd)
+        self.fx_store, self.fx_times = None, None
+        if self.add_fuxi_ztd:
+            if not ztd_fuxi_zarr:
+                raise ValueError('add_fuxi_ztd=True 需要 ztd_fuxi_zarr')
+            self.fx_store = zarr.open(str(ztd_fuxi_zarr), 'r')
+            self.fx_times = decode_time(self.fx_store, 'time')
+            if int(self.fx_store['ztd_fuxi'].shape[0]) != len(self.fx_times):
+                raise ValueError('ztd_fuxi_zarr 的 time 轴与数据长度不一致')
+
     def prepare_data(self, date):
         end = self.dates.get_indexer([date])[0]
         if end < 0:
             return None
+        fx = None
+        if self.add_fuxi_ztd:
+            j = self.fx_times.get_indexer([date])[0]
+            if j < 0:
+                return None                      # 该时刻没有 FuXi ZTD，按缺样本处理
+            fx = np.asarray(self.fx_store['ztd_fuxi'][int(j)], dtype='float32')
         idx = np.arange(end - self.data_frames + 1, end + 1)
         obs = []
         kk = 0
@@ -192,6 +215,10 @@ class read_obs:
             if 0 <= i < len(self.dates):
                 # 标准化值 -> mm（NaN 原样保留）
                 arr = np.asarray(self.store['ztd'][int(i)], dtype='float32') * self.z_sd + self.z_mu
+                if self.add_fuxi_ztd:
+                    # 第 2 个通道 = FuXi ZTD（mm）。每帧都放同一场（它只有有效时刻一个场），
+                    # 和 lat/lon 侧通道的广播方式一致。
+                    arr = np.stack([arr, fx], axis=0)
                 # 每帧 (C, H, W) -> (1, C, H, W)，与参考版逐帧 nc 的形状对齐
                 data = torch.from_numpy(arr).reshape(1, self.data_channum, *self.grid_hw)
                 kk += 1
@@ -216,7 +243,9 @@ class MyDataset(Dataset):
                  dates_range,
                  obs_frame_minutes=5,
                  grid_hw=(80, 120),
-                 seed=2000):
+                 seed=2000,
+                 add_fuxi_ztd=False,
+                 ztd_fuxi_zarr=None):
         start_date = pd.to_datetime(dates_range[0], format="%Y%m%d%H")
         end_date = pd.to_datetime(dates_range[1], format="%Y%m%d%H")
         self.dates = pd.date_range(start_date, end_date, freq=f"6h")
@@ -228,7 +257,8 @@ class MyDataset(Dataset):
         self.read_era5 = read_era5(era5_dir)
         self.read_fcst = read_fcst(fcst_dir, fcst_step)
         self.read_obs = read_obs(obs_dir, obs_stat_dir, obs_frames, obs_channum,
-                                 frame_minutes=obs_frame_minutes, grid_hw=grid_hw)
+                                 frame_minutes=obs_frame_minutes, grid_hw=grid_hw,
+                                 add_fuxi_ztd=add_fuxi_ztd, ztd_fuxi_zarr=ztd_fuxi_zarr)
 
         print(f'[Dataset Time] ||| {self.dates[0]} ~ {self.dates[-1]}')
         print(f'[Dataset Num] ||| {len(self.dates)}')

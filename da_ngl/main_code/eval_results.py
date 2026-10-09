@@ -136,7 +136,9 @@ def main() -> None:
                                   num_workers=cfg.num_workers if args.num_workers is None else args.num_workers,
                                   persistent_workers=False, shuffle=False,
                                   obs_frame_minutes=cfg.obs_frame_minutes,
-                                  grid_hw=cfg.grid_hw)
+                                  grid_hw=cfg.grid_hw,
+                                  add_fuxi_ztd=cfg.add_fuxi_ztd,
+                                  ztd_fuxi_zarr=cfg.ztd_fuxi_zarr)
     ds = dataloader.dataset
     mean_std_dict = ds.read_obs.mean_std_dict
     n_chan = len(LABEL_IDX)
