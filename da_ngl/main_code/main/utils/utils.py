@@ -52,7 +52,7 @@ def station_halo_mask(cfg, halo_cells=None):
     import numpy as np
     import zarr
 
-    g = zarr.open(str(cfg.obs_dir), 'r')
+    g = zarr.open(str(cfg.obs_dir), mode='r')
     m = ~np.asarray(g['mask'][:]).astype(bool)
     h = int(getattr(cfg, 'loss_halo_cells', 3) if halo_cells is None else halo_cells)
     if h <= 0:

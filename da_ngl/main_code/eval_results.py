@@ -136,14 +136,16 @@ def main() -> None:
                                   num_workers=cfg.num_workers if args.num_workers is None else args.num_workers,
                                   persistent_workers=False, shuffle=False,
                                   obs_frame_minutes=cfg.obs_frame_minutes,
-                                  grid_hw=cfg.grid_hw)
+                                  grid_hw=cfg.grid_hw,
+                                  add_fuxi_ztd=cfg.add_fuxi_ztd,
+                                  ztd_fuxi_zarr=cfg.ztd_fuxi_zarr)
     ds = dataloader.dataset
     mean_std_dict = ds.read_obs.mean_std_dict
     n_chan = len(LABEL_IDX)
-    all_ch = np.asarray([str(c) for c in zarr.open(str(cfg.era5_dir), 'r')['channel'][:]])
+    all_ch = np.asarray([str(c) for c in zarr.open(str(cfg.era5_dir), mode='r')['channel'][:]])
     names = [str(c) for c in all_ch[LABEL_IDX]]
 
-    station = ~np.asarray(zarr.open(str(cfg.obs_dir), 'r')['mask'][:])      # True = 有站
+    station = ~np.asarray(zarr.open(str(cfg.obs_dir), mode='r')['mask'][:])      # True = 有站
     st_t = torch.as_tensor(station).to(device)
     n_st = int(station.sum())
 
