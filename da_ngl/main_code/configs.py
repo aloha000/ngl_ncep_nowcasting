@@ -15,12 +15,12 @@ import numpy as np
 
 from main.model import mse, mae
 
-work_dir = '/inspire/ssd/project/sais-mtm/public/linan/da/da_ngl/da_ngl/main_code/work_dir/results/stage_three'
-DATASET_DIR = ('/inspire/ssd/project/sais-mtm/public/linan/da/da_ngl/da_ngl/dataset')
+work_dir = '/inspire/ssd/project/sais-mtm/public/linan/da/qz_da_ngl/da_ngl/main_code/work_dir/results/stage_three'
+DATASET_DIR = ('/inspire/ssd/project/sais-mtm/public/linan/da/qz_da_ngl/da_ngl/dataset')
 
 # 一次运行一个目录：所有产物都落在 {work_dir}/{model_id}/ 下。
 # 做不同实验（比如观测置零）时改这个，就不会互相覆盖。
-model_id = 'lead24h_halo_input-fuxi-ztd'  
+model_id = 'lead24h_allarea_compare'  
 
 # 消融开关：True 时把 ZTD 通道整片置零（= 训练均值），网络只看到站点几何/掩膜，
 zero_obs = False
@@ -30,14 +30,14 @@ zero_obs = False
 #            model_obs_chans 自动变成 4（2 个数据通道 + mask/lat/lon 侧通道是另算的）
 #   False -> 只有 NGL ZTD（原行为）
 # 注意：打开之后 obs_encoder 第一层的输入通道数变了，**旧的 checkpoint 不能直接用**。
-add_fuxi_ztd = True
+add_fuxi_ztd = False
 ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h_zdz.zarr'
 obs_channum = 1 + int(add_fuxi_ztd)
 
 # 标签损失的格点掩膜：
 #   'none'          全域（参考版行为）
 #   'station_halo'  只监督"有 ZTD 站的格点 + 周围 loss_halo_cells 格"（方形核）
-loss_mask = 'station_halo'
+loss_mask = 'none'
 loss_halo_cells = 3
 
 era5_dir = f'{DATASET_DIR}/label_europe_0p25.zarr'
@@ -74,6 +74,8 @@ model_depth = (2, 2, 2)
 model_dropout_rate = 0
 resume_model = None
 pre_model = None
+# 旧版多卡 checkpoint 缺少其他 rank 的优化器状态；显式开启后仅续接权重和步数。
+resume_reset_optimizer = False
 
 # %% Train Setting
 rand_seed = 2000
@@ -85,7 +87,7 @@ batch_size = 2
 num_workers = 1
 
 prefetch_factor = 3
-persistent_workers = False
+persistent_workers = True
 multiprocessing_context = "forkserver"
 pin_memory = False
 

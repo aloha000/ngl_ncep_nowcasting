@@ -146,12 +146,15 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
         
         loss = cfg.loss_fn(batch_out, batch_era5)
         grad_scaler.scale(loss).backward()
-        # dist.barrier()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=32)
+        # Clip unscaled gradients using the global norm across all FSDP shards.
+        # All ranks must participate in FSDP's collective norm calculation.
+        grad_scaler.unscale_(optimizer)
+        model.clip_grad_norm_(max_norm=32)
         # dist.barrier()
         grad_scaler.step(optimizer)
         # dist.barrier()
         grad_scaler.update()
+        
         # dist.barrier()
         
         ddp_loss[0] += loss.item()
@@ -338,9 +341,15 @@ def main(rank, configs, master_port, world_size, overrides=None):
 
     # 加载模型参数
     start_iteration = 0
+    restored = {}
+    early_stop = EarlyStopping(**cfg.early_stop) if getattr(cfg, 'early_stop', None) is not None else None
     if cfg.resume_model is not None:
-        model, optimizer, scheduler, iteration = load_checkpoint(cfg.resume_model, model, optimizer, scheduler)
+        model, optimizer, scheduler, iteration, restored = load_checkpoint(
+            cfg.resume_model, model, optimizer, scheduler,
+            grad_scaler=grad_scaler, warmup_scheduler=warmup_scheduler, early_stop=early_stop,
+            reset_optimizer=getattr(cfg, 'resume_reset_optimizer', False), return_state=True)
         start_iteration = iteration
+        cfg.warmup = restored.get('warmup_active', cfg.warmup)
         cfg.logger.info(f'[Resume Model] ||| {cfg.resume_model} ')
     elif cfg.pre_model is not None:
         if hasattr(cfg, 'start_iteration'):
@@ -348,19 +357,17 @@ def main(rank, configs, master_port, world_size, overrides=None):
         model, _, _, _ = load_checkpoint(cfg.pre_model, model)
         cfg.logger.info(f'[Pre Model] ||| {cfg.pre_model} ')
 
-    if hasattr(cfg, 'early_stop'):
-        early_stop = EarlyStopping(**cfg.early_stop)
-
     # 训练
-    cfg.lr = []
-    cfg.loss_train = []
-    cfg.loss_val = []
+    cfg.lr = restored.get('lr', [])
+    cfg.loss_train = restored.get('loss_train', [])
+    cfg.loss_val = restored.get('loss_val', [])
     cfg.iteration = start_iteration
-    # 只保留 val 最好的那一个 checkpoint：先评估、只有 val 变好才覆盖同一个文件。
-    # 文件名固定，所以磁盘上永远只有 1 个（含 optimizer 状态，可续训）。
-    best_val = float('inf')
-    best_iter = -1
+    # best.pth 用于评估；last.pth 在每次验证后保存完整的最新训练状态。
+    best_val = restored.get('best_val', float('inf'))
+    best_iter = restored.get('best_iter', -1)
     best_file = os.path.join(run_dir(cfg), 'model', 'best.pth')
+    last_file = os.path.join(run_dir(cfg), 'model', 'last.pth')
+    best_checkpoint = restored.get('best_checkpoint', best_file)
 
     # 标签损失的格点掩膜：只监督 ZTD 站点周围的格点
     if str(getattr(cfg, 'loss_mask', 'none')).lower() == 'station_halo':
@@ -375,42 +382,55 @@ def main(rank, configs, master_port, world_size, overrides=None):
     # 背景场基线：batch_out = batch_fcst，跟模型权重无关，所以只算一次就够，
     # 这里算完既写 wandb（每个 epoch 都带上，画出来就是一条水平参考线），
     # 也复用为训练结束时的 [All Train/Val loss] 末位，省掉最后那两遍评估。
-    bg_train = evaluate(cfg, model, rank, dataloader, get_fcst_loss=True)
-    bg_val = evaluate(cfg, model, rank, dataloader_val, get_fcst_loss=True)
+    if 'bg_train' in restored and 'bg_val' in restored:
+        bg_train, bg_val = restored['bg_train'], restored['bg_val']
+    else:
+        bg_train = evaluate(cfg, model, rank, dataloader, get_fcst_loss=True)
+        bg_val = evaluate(cfg, model, rank, dataloader_val, get_fcst_loss=True)
     if rank == 0:
         cfg.logger.info(f'[Background-only loss] train={bg_train:.4f} val={bg_val:.4f}')
 
-    for epoch in range(1000):
+    for epoch in range(restored.get('next_epoch', 0), 1000):
+        if cfg.iteration >= cfg.num_teration or (early_stop is not None and early_stop.early_stop):
+            break
         model, loss_train = train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup_scheduler, scheduler)
 
         loss_val = evaluate(cfg, model, rank, dataloader_val)
 
-        if loss_val < best_val:
+        improved = loss_val < best_val
+        if improved:
             best_val, best_iter = loss_val, cfg.iteration
-            # summon_full_params 是集合操作，所有 rank 都要进这个上下文；
-            # 只有 rank 0 真正写盘（save_checkpoint 内部也只让 rank 0 写）。
-            with FSDP.summon_full_params(model):
-                if rank == 0:
-                    save_checkpoint(best_file, model, cfg.iteration, optimizer, scheduler)
-                    cfg.logger.info(f'[Save Model] best val={loss_val:.4f} @ iter {cfg.iteration}'
-                                    f' -> {best_file}')
+            best_checkpoint = best_file
         elif rank == 0:
             cfg.logger.info(f'[Best] val={loss_val:.4f} @ iter {cfg.iteration} '
                             f'-- keeping the earlier best {best_val:.4f} @ iter {best_iter}')
         
-        if hasattr(cfg, 'early_stop'):
+        if early_stop is not None:
             early_stop(loss_val)
-            if early_stop.early_stop:
-                cfg.logger.info('{:#^75}'.format('Early Stop'))
-                cfg.logger.info(f"Epoch {epoch + 1}: Loss did not improve from {early_stop.best_loss}, stop training")
-                cfg.logger.info('{:#^75}'.format('Early Stop'))
-                break
 
         cfg.loss_train.append(loss_train)
         cfg.loss_val.append(loss_val)
         
         run.log({"train_loss": loss_train, "val_loss": loss_val,
                  "background_train_loss": bg_train, "background_val_loss": bg_val})
+
+        # FULL_STATE_DICT/optim_state_dict are collective: every rank must enter.
+        save_checkpoint(
+            last_file, model, cfg.iteration, optimizer, scheduler,
+            grad_scaler=grad_scaler, warmup_scheduler=warmup_scheduler, early_stop=early_stop,
+            training_state=dict(next_epoch=epoch+1, warmup_active=cfg.warmup,
+                                best_val=best_val, best_iter=best_iter, best_checkpoint=best_checkpoint,
+                                lr=cfg.lr, loss_train=cfg.loss_train, loss_val=cfg.loss_val,
+                                bg_train=bg_train, bg_val=bg_val),
+            also_save=best_file if improved else None)
+        if rank == 0:
+            cfg.logger.info(f'[Save Resume] iter {cfg.iteration} -> {last_file}')
+            if improved:
+                cfg.logger.info(f'[Save Model] best val={best_val:.4f} @ iter {best_iter} -> {best_file}')
+        if early_stop is not None and early_stop.early_stop:
+            cfg.logger.info('{:#^75}'.format('Early Stop'))
+            cfg.logger.info(f'Epoch {epoch+1}: Loss did not improve from {early_stop.best_loss}, stop training')
+            break
 
         if cfg.iteration >= cfg.num_teration:
             break
@@ -422,12 +442,15 @@ def main(rank, configs, master_port, world_size, overrides=None):
     cfg.loss_val.append(bg_val)
     
     if rank == 0:
-        cfg.logger.info(f'[Best Model] val={best_val:.4f} @ iter {best_iter} -> {best_file}')
+        cfg.logger.info(f'[Best Model] val={best_val:.4f} @ iter {best_iter} -> {best_checkpoint}')
         cfg.logger.info(f"[All Train loss]: {cfg.loss_train}")
         cfg.logger.info(f"[All Val loss]: {cfg.loss_val}")
         np.save(os.path.join(run_dir(cfg), 'train_loss.npy'), np.array(cfg.loss_train))
         np.save(os.path.join(run_dir(cfg), 'val_loss.npy'), np.array(cfg.loss_val))
         np.save(os.path.join(run_dir(cfg), 'lr.npy'), np.array(cfg.lr))
+
+    # Includes the resume-already-complete path (which has no forward/backward).
+    dist.destroy_process_group()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

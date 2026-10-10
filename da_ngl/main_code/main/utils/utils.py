@@ -4,6 +4,8 @@ import torch.distributed as dist
 from collections import OrderedDict
 import datetime
 import logging
+from .configuration import apply_overrides, _coerce
+from .checkpoint import load_checkpoint, save_checkpoint
 
 
 def create_logger(save_path, type='Train'):
@@ -29,21 +31,6 @@ def create_logger(save_path, type='Train'):
     return logger
 
 
-def _coerce(value):
-    """CLI 字符串 -> bool / int / float / str。"""
-    low = str(value).strip().lower()
-    if low in ('true', 'yes', 'on'):
-        return True
-    if low in ('false', 'no', 'off'):
-        return False
-    for cast in (int, float):
-        try:
-            return cast(value)
-        except ValueError:
-            pass
-    return value
-
-
 def station_halo_mask(cfg, halo_cells=None):
     """(H, W) bool：有 GNSS ZTD 站的格点 + 周围 ``loss_halo_cells`` 格（方形核）。
 
@@ -59,22 +46,6 @@ def station_halo_mask(cfg, halo_cells=None):
         return m
     from scipy import ndimage as ndi
     return np.asarray(ndi.binary_dilation(m, structure=np.ones((2 * h + 1, 2 * h + 1), bool)))
-
-
-def apply_overrides(cfg, items):
-    """把 ``--set KEY=VALUE`` 作用到 config 模块上（就地修改）。
-
-    例：``--set zero_obs=true --set model_id=obszero``。train_FSDP 与 eval_results
-    共用，保证训练和评测用的是同一套设置。
-    """
-    for item in (items or []):
-        if '=' not in item:
-            raise SystemExit(f'--set 需要 KEY=VALUE，收到 {item!r}')
-        key, value = item.split('=', 1)
-        key, value = key.strip(), _coerce(value.strip())
-        setattr(cfg, key, value)
-        print(f'[override] {key} = {value!r}')
-    return cfg
 
 
 def run_dir(cfg):
@@ -108,48 +79,6 @@ def get_local_rank():
         return get_rank()
     else:
         return int(os.environ['LOCAL_RANK'])
-
-
-def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None):
-    # 加载checkpoint
-    if hasattr(model, 'module'):
-        model = model.module
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    # 获取模型的参数
-    checkpoint_model_keys = [ikey for ikey in checkpoint['model'].keys()]
-    # check = checkpoint['model']
-    model_dict = model.state_dict()
-    check_ = OrderedDict()
-    for num, (k, v) in enumerate(model_dict.items()):
-        check_[k] = checkpoint['model'][checkpoint_model_keys[num]]
-    model.load_state_dict(check_)
-    # 获取优化器的参数
-    if optimizer is not None:
-        optimizer.load_state_dict(checkpoint['optimizer'])
-    # 获取调度器的参数
-    if scheduler is not None:
-        scheduler.load_state_dict(checkpoint['scheduler'])
-
-    if 'iteration' in checkpoint:
-        iteration = checkpoint['iteration']
-    else:
-        iteration = None
-    return model, optimizer, scheduler, iteration
-
-
-def save_checkpoint(file_name, model, iteration, optimizer=None, scheduler=None):
-    save_dict = OrderedDict()
-    if get_rank() == 0:
-        if hasattr(model, 'module'):
-            model = model.module
-        save_dict['model'] = model.state_dict()
-        save_dict['iteration'] = dict(iteration=iteration)
-        if optimizer is not None:
-            save_dict['optimizer'] = optimizer.state_dict()
-        if scheduler is not None:
-            save_dict['scheduler'] = scheduler.state_dict()
-        torch.save(save_dict, file_name)
-    return None
 
 
 def times_step_gene(beg_time: str, end_time: str, step: int, test=False):

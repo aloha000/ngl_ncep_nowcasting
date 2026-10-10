@@ -49,6 +49,14 @@ class EarlyStopping:
         self.best_loss = None
         self.early_stop = False
 
+    def state_dict(self):
+        return {key: getattr(self, key) for key in
+                ('patience', 'min_delta', 'counter', 'best_loss', 'early_stop')}
+
+    def load_state_dict(self, state):
+        for key in ('patience', 'min_delta', 'counter', 'best_loss', 'early_stop'):
+            setattr(self, key, state[key])
+
     def __call__(self, val_loss):
         if self.best_loss is None:
             self.best_loss = val_loss
@@ -72,6 +80,13 @@ class WarmupScheduler:
         self.stop_lr = stop_lr
         self.steps = float(warmup_steps)
         self.count = 0.
+
+    def state_dict(self):
+        return {key: getattr(self, key) for key in ('start_lr', 'stop_lr', 'steps', 'count')}
+
+    def load_state_dict(self, state):
+        for key in ('start_lr', 'stop_lr', 'steps', 'count'):
+            setattr(self, key, state[key])
 
     def __call__(self):
         if self.count < self.steps and self.start_lr < self.stop_lr:

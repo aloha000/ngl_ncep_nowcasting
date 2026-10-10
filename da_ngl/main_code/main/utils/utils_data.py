@@ -80,22 +80,15 @@ def build_dataloader(world_size,
             sampler = SubsetRandomSampler(ind_ls)
         else:
             sampler = SequentialSampler(dataset)
-    if persistent_workers:
-        dataloader = DataLoader(dataset=dataset,
-                                sampler=sampler,
-                                batch_size=batch_size,
-                                num_workers=num_workers,
-                                prefetch_factor=prefetch_factor,
-                                persistent_workers=persistent_workers,
-                                multiprocessing_context=multiprocessing_context,
-                                pin_memory=pin_memory)
-    else:
-        dataloader = DataLoader(dataset=dataset,
-                                sampler=sampler,
-                                batch_size=batch_size,
-                                num_workers=num_workers,
-                                pin_memory=pin_memory)
-    return dataloader
+    worker_options = {}
+    if num_workers > 0:
+        worker_options = dict(prefetch_factor=prefetch_factor,
+                              persistent_workers=persistent_workers,
+                              multiprocessing_context=multiprocessing_context)
+    elif persistent_workers:
+        raise ValueError('persistent_workers requires num_workers > 0')
+    return DataLoader(dataset=dataset, sampler=sampler, batch_size=batch_size,
+                      num_workers=num_workers, pin_memory=pin_memory, **worker_options)
 
 
 class read_era5:

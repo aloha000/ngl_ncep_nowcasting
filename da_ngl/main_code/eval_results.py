@@ -26,6 +26,11 @@ import os
 import sys
 from pathlib import Path
 
+# Select MKL's GNU OpenMP backend before NumPy/PyTorch load native libraries.
+# The gnss environment's Intel backend fails during plotting with missing
+# __kmpc_global_thread_num / omp_get_num_procs symbols.
+os.environ.setdefault('MKL_THREADING_LAYER', 'GNU')
+
 import numpy as np
 import torch
 import zarr
