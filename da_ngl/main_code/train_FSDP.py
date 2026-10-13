@@ -132,6 +132,14 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
         # dist.barrier()
         
         time_data = time.perf_counter()
+
+        log_input_shapes = rank == 0 and not getattr(cfg, '_input_shapes_logged', False)
+        if log_input_shapes:
+            cfg.logger.info(
+                '[Input Shapes] first training batch on rank 0; axes=(B, T, C, H, W); B is per GPU\n'
+                f'[Raw background]: {tuple(batch_fcst.shape)}\n'
+                f'[Raw observations]: {tuple(batch_obs.shape)}\n'
+                f'[Raw ERA5 labels]: {tuple(batch_era5.shape)}')
         
         batch_fcst = process_bg(batch_fcst, rank)
         batch_era5 = process_bg(batch_era5, rank)
@@ -140,21 +148,32 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
         batch_fcst = batch_fcst.half()
         batch_era5 = batch_era5.half()
         batch_obs = batch_obs.half()
+
+        if log_input_shapes:
+            obs_channels = ['NGL ZTD']
+            if cfg.add_fuxi_ztd:
+                obs_channels.append('FuXi ZTD')
+            obs_channels.extend(['sin(lat)', 'cos(lon)'])
+            cfg.logger.info(
+                f'[Model background input]: {tuple(batch_fcst.shape)}, dtype={batch_fcst.dtype}\n'
+                f'[Model observation input]: {tuple(batch_obs.shape)}, dtype={batch_obs.dtype}\n'
+                f'[ERA5 labels]: {tuple(batch_era5.shape)}, dtype={batch_era5.dtype}\n'
+                f'[Observation channels per frame]: {obs_channels}\n'
+                f'[Observation T*C]: {batch_obs.shape[1] * batch_obs.shape[2]}\n'
+                f'[Observation flags]: add_fuxi_ztd={cfg.add_fuxi_ztd}, zero_obs={cfg.zero_obs}')
+            cfg._input_shapes_logged = True
         
         time_data_proccess = time.perf_counter()
         batch_out = model(batch_fcst, batch_obs)
         
         loss = cfg.loss_fn(batch_out, batch_era5)
         grad_scaler.scale(loss).backward()
-        # Clip unscaled gradients using the global norm across all FSDP shards.
-        # All ranks must participate in FSDP's collective norm calculation.
-        grad_scaler.unscale_(optimizer)
-        model.clip_grad_norm_(max_norm=32)
+        # dist.barrier()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=32)
         # dist.barrier()
         grad_scaler.step(optimizer)
         # dist.barrier()
         grad_scaler.update()
-        
         # dist.barrier()
         
         ddp_loss[0] += loss.item()
