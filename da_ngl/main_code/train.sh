@@ -5,7 +5,7 @@
 #
 # 产物落在 {work_dir}/{model_id}/ 下（work_dir / model_id 可在 configs.py 里改，
 # 或用 --set work_dir=... --set model_id=... 覆盖）。
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 export MASTER_PORT=${MASTER_PORT:-22336}
 cd "$(dirname "$0")"
 echo "[train.sh] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}  MASTER_PORT=${MASTER_PORT}"

@@ -17,5 +17,6 @@ plots/
 preprocessing/__pycache__/
 main_code/nohup.out
 nohup.out
+da_ngl/main_code/main/utils/__pycache_
 da_ngl/test/fuxi_ngl_ztd_comparison/
 da_ngl/main_code/wandb/

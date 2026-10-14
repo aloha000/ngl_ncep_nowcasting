@@ -15,12 +15,12 @@ import numpy as np
 
 from main.model import mse, mae
 
-work_dir = '/inspire/ssd/project/sais-mtm/public/linan/da/qz_da_ngl/da_ngl/main_code/work_dir/results/stage_three'
-DATASET_DIR = ('/inspire/ssd/project/sais-mtm/public/linan/da/qz_da_ngl/da_ngl/dataset')
+work_dir = '/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/main_code/work_dir/results/stage_three/batchsize_test_4gpus_old-grad_10obs'
+DATASET_DIR = ('/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/dataset')
 
 # 一次运行一个目录：所有产物都落在 {work_dir}/{model_id}/ 下。
 # 做不同实验（比如观测置零）时改这个，就不会互相覆盖。
-model_id = 'lead24h_halo_input-fuxi-ztd_2gpus_old-grad_10obs'  
+model_id = 'lead24h_halo_input-fuxi-ztd_8bs_warmup0-0175_iter3000_lr8e-4_fuxi-zhd'  
 
 # 消融开关：True 时把 ZTD 通道整片置零（= 训练均值），网络只看到站点几何/掩膜，
 zero_obs = False
@@ -79,12 +79,12 @@ resume_reset_optimizer = False
 
 # %% Train Setting
 rand_seed = 2000
-num_teration = 8000
-batch_size = 2
+num_teration = 3000
+batch_size = 8
 # This host exposes only 64 MiB of /dev/shm.  FSDP launches one loader per
 # rank for both train and validation, so multiprocessing workers exhaust that
 # shared memory while prefetching batches.
-num_workers = 1
+num_workers = 8
 
 prefetch_factor = 3
 persistent_workers = True
@@ -94,18 +94,18 @@ pin_memory = False
 save_interval = 10
 loss_fn = mae(lat=lat)     # 纬度加权用本网格的 80 个纬度
 
-early_stop = {'patience': 5, 'min_delta': 0.00001}
+early_stop = {'patience': 8, 'min_delta': 0.00001}
 
 # %% Optimizer Setting
 opt_type = 'AdamW'  # [Adam, AdamW, SGD]
-learning_rate = 1e-4
+learning_rate = 8e-4
 weight_decay = 0.1
 
 warmup = True
 if warmup:
     start_lr = 1e-8
-    stop_lr = 1e-4
-    warmup_rate = 0.05
+    stop_lr = learning_rate
+    warmup_rate = 0.0175
 
 scheduler = 'CosineAnnealingLR'  # [StepLR, MultiStepLR, CosineAnnealingLR]
 if scheduler == 'StepLR' or scheduler == 'MultiStepLR':
