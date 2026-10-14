@@ -77,6 +77,9 @@ def __init__(rank, configs, master_port, world_size, overrides=None):
 
 
 def process_obs(data, mean_std_dict, rank, cfg):
+    if cfg.model_obs_chans == 0:
+        # No coordinates, masks, normalisation or device copy in this branch.
+        return data
     # 参考版这里写死了 720x1440 和 6 帧；本版从数据和 cfg 取
     B, T, _, H, W = data.shape
     lat = torch.from_numpy(np.asarray(cfg.lat, dtype='float32')).cuda(rank)
@@ -124,7 +127,8 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
     time_start = time.perf_counter()
     cfg.logger.info(f'[Epoch Iteration Number] ||| {len(dataloader)} ')
     
-    mean_std_dict = dataloader.dataset.read_obs.mean_std_dict
+    mean_std_dict = (dataloader.dataset.read_obs.mean_std_dict
+                     if dataloader.dataset.read_obs is not None else None)
     for _, (batch_fcst, batch_era5, batch_obs) in enumerate(dataloader):
         cfg.iteration += 1
         
@@ -154,6 +158,8 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
             if cfg.add_fuxi_ztd:
                 obs_channels.append('FuXi ZTD')
             obs_channels.extend(['sin(lat)', 'cos(lon)'])
+            if cfg.model_obs_chans == 0:
+                obs_channels = []
             cfg.logger.info(
                 f'[Model background input]: {tuple(batch_fcst.shape)}, dtype={batch_fcst.dtype}\n'
                 f'[Model observation input]: {tuple(batch_obs.shape)}, dtype={batch_obs.dtype}\n'
@@ -164,7 +170,7 @@ def train_one_epoch(cfg, model, rank, dataloader, optimizer, grad_scaler, warmup
             cfg._input_shapes_logged = True
         
         time_data_proccess = time.perf_counter()
-        batch_out = model(batch_fcst, batch_obs)
+        batch_out = model(batch_fcst) if cfg.model_obs_chans == 0 else model(batch_fcst, batch_obs)
         
         loss = cfg.loss_fn(batch_out, batch_era5)
         grad_scaler.scale(loss).backward()
@@ -217,7 +223,8 @@ def evaluate(cfg, model, rank, dataloader, get_fcst_loss=False):
     model.eval()
     ddp_loss = torch.zeros(2).to(rank)
 
-    mean_std_dict = dataloader.dataset.read_obs.mean_std_dict
+    mean_std_dict = (dataloader.dataset.read_obs.mean_std_dict
+                     if dataloader.dataset.read_obs is not None else None)
     for _, (batch_fcst, batch_era5, batch_obs) in enumerate(dataloader):
 
         batch_fcst = process_bg(batch_fcst, rank)
@@ -232,7 +239,7 @@ def evaluate(cfg, model, rank, dataloader, get_fcst_loss=False):
             batch_out = batch_fcst
         else:
             with torch.no_grad():
-                batch_out = model(batch_fcst, batch_obs)
+                batch_out = model(batch_fcst) if cfg.model_obs_chans == 0 else model(batch_fcst, batch_obs)
         loss = cfg.loss_fn(batch_out, batch_era5)
         ddp_loss[0] += loss.item()
         ddp_loss[1] += 1
@@ -295,7 +302,9 @@ def main(rank, configs, master_port, world_size, overrides=None):
                                       multiprocessing_context=cfg.multiprocessing_context, 
                                       pin_memory=cfg.pin_memory, 
                                       shuffle=False)
-    if getattr(cfg, 'zero_obs', False):
+    if cfg.model_obs_chans == 0:
+        cfg.logger.info('[Ablation] observation branch removed; obs_chans=0; side_info=FuXi only')
+    elif getattr(cfg, 'zero_obs', False):
         cfg.logger.info('[Ablation] zero_obs=True: ZTD 通道置零（只保留站点几何/掩膜）')
     cfg.logger.info('{:#^75}'.format('Data Information'))
     cfg.logger.info(f'[Train Data Number]: {len(dataloader.dataset)} \n'

@@ -30,7 +30,7 @@ def apply_overrides(cfg, items):
     explicit = {}
     optional = {'start_iteration': 0, 'resume_reset_optimizer': False,
                 'start_lr': 1e-8, 'stop_lr': 1e-4, 'warmup_rate': .05,
-                'step_size': 2}
+                'step_size': 2, 'remove_obs_branch': False}
     for item in items or []:
         if '=' not in item:
             raise SystemExit(f'--set requires KEY=VALUE, got {item!r}')
@@ -74,8 +74,11 @@ def apply_overrides(cfg, items):
                     pass  # a deliberately external/custom path
     if 'obs_dir' in explicit and 'obs_stat_dir' not in explicit:
         values['obs_stat_dir'] = values['obs_dir']
-    derive('obs_channum', 1 + int(values['add_fuxi_ztd']))
-    derive('model_obs_chans', values['obs_channum'] + 2)
+    remove_obs = values.get('remove_obs_branch', False)
+    if not isinstance(remove_obs, bool):
+        raise SystemExit('remove_obs_branch requires true/false')
+    derive('obs_channum', 0 if remove_obs else 1 + int(values['add_fuxi_ztd']))
+    derive('model_obs_chans', 0 if remove_obs else values['obs_channum'] + 2)
     derive('model_obs_frames', values['obs_frames'])
     for key in ('lat', 'lon'):
         axis = np.asarray(values[key], dtype=float)

@@ -16,6 +16,8 @@ MAE，两者在同样的样本上算，可以直接比。
         --checkpoint work_assi_ztd/model/iteration_XXXX.pth
 
 不传 --checkpoint 时依次找 {work_dir}/{model_id}/model/ 下的 best.pth、最新的 .pth。
+删除观测分支的模型使用 --set remove_obs_branch=true；完整模型使用 false。
+无观测模式不读取观测序列；站点 mask 仍用于站点/halo 指标报告，不输入模型。
 """
 
 from __future__ import annotations
@@ -82,12 +84,24 @@ def load_model(cfg, ckpt: Path, device):
     # FSDP / DDP 的前缀去掉
     sd = {k.replace('_fsdp_wrapped_module.', '').replace('module.', ''): v
           for k, v in sd.items()}
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if missing or unexpected:
-        print(f'[warn] state_dict 不完全匹配：缺 {len(missing)} 个、多 {len(unexpected)} 个'
-              f'（缺的前 3 个：{list(missing)[:3]}）')
+    try:
+        model.load_state_dict(sd, strict=True)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f'Checkpoint {ckpt} 与当前网络结构不匹配 '
+            f'(model_obs_chans={cfg.model_obs_chans})。'
+            '请确认 remove_obs_branch 与训练时一致，并使用对应模型的 checkpoint。'
+        ) from exc
     model.eval()
     return model
+
+
+def predict_analysis(model, background, observations, mean_std_dict, rank, cfg):
+    """Use the same structural ablation as training, without obs preprocessing."""
+    if cfg.model_obs_chans == 0:
+        return model(background.float())
+    observations = process_obs(observations, mean_std_dict, rank, cfg)
+    return model(background.float(), observations.float())
 
 
 def main() -> None:
@@ -103,7 +117,7 @@ def main() -> None:
     ap.add_argument('--model_id', default=None,
                     help='等价于 --set model_id=xxx；决定去哪个 run 目录找 checkpoint')
     ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
-                    help='覆盖 configs 里的设置，例：--set zero_obs=true')
+                    help='覆盖配置，例：--set remove_obs_branch=true')
     args = ap.parse_args()
 
     cfg = importlib.import_module(args.configs)
@@ -128,6 +142,8 @@ def main() -> None:
 
     ckpt = pick_checkpoint(cfg, args.checkpoint)
     print(f'[cfg] {args.configs} | split={args.split} | ckpt={ckpt}')
+    if cfg.model_obs_chans == 0:
+        print('[Ablation] observation branch removed; side_info=FuXi only')
 
     dates_range = {'train': cfg.dates_train_range,
                    'val': cfg.dates_val_range,
@@ -145,7 +161,7 @@ def main() -> None:
                                   add_fuxi_ztd=cfg.add_fuxi_ztd,
                                   ztd_fuxi_zarr=cfg.ztd_fuxi_zarr)
     ds = dataloader.dataset
-    mean_std_dict = ds.read_obs.mean_std_dict
+    mean_std_dict = ds.read_obs.mean_std_dict if ds.read_obs is not None else None
     n_chan = len(LABEL_IDX)
     all_ch = np.asarray([str(c) for c in zarr.open(str(cfg.era5_dir), mode='r')['channel'][:]])
     names = [str(c) for c in all_ch[LABEL_IDX]]
@@ -170,8 +186,7 @@ def main() -> None:
         for i, (bf, be, bo) in enumerate(dataloader):
             bf = process_bg(bf, rank, cfg.grid_hw)
             be = process_bg(be, rank, cfg.grid_hw)
-            bo = process_obs(bo, mean_std_dict, rank, cfg)
-            out = model(bf.float(), bo.float())
+            out = predict_analysis(model, bf, bo, mean_std_dict, rank, cfg)
             lab = be.float()
 
             # (B,1,C,H,W) -> (B,C,H,W)：T 维是 1，直接去掉

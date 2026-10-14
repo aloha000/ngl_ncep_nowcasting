@@ -112,15 +112,17 @@ class FussionNetv2(nn.Module):
         self.upsample_bg_1 = DecoderBlock(embed_dim * 2, embed_dim * 2, embed_dim, act=True)
         self.upsample_bg_0 = DecoderBlock(embed_dim * 2, embed_dim, in_chans_bg, act=False)
 
-        self.upsample_obs_1 = DecoderBlock(embed_dim * 2, embed_dim * 2, embed_dim, act=True)
-        self.upsample_obs_0 = DecoderBlock(embed_dim * 2, embed_dim, in_chans_obs, act=False)
+        self.has_obs = in_chans_obs > 0
+        if self.has_obs:
+            self.upsample_obs_1 = DecoderBlock(embed_dim * 2, embed_dim * 2, embed_dim, act=True)
+            self.upsample_obs_0 = DecoderBlock(embed_dim * 2, embed_dim, in_chans_obs, act=False)
 
         self.upsample_side_1 = DecoderBlock(embed_dim * 2, embed_dim * 2, embed_dim, act=True)
         self.upsample_side_0 = DecoderBlock(embed_dim * 2, embed_dim, in_chans_side, act=True)
 
     def forward(self, bg, obs, side_info):
         # bg, obs (n c h w)
-        h = torch.concat([bg, obs, side_info], dim=1)
+        h = torch.concat([bg, obs, side_info] if self.has_obs else [bg, side_info], dim=1)
         h0 = self.downsample_0(h)
         h1 = self.downsample_1(h0)
         h0_bg = self.upsample_bg_1(h1)
@@ -128,14 +130,17 @@ class FussionNetv2(nn.Module):
         out_bg = self.upsample_bg_0(h0_bg)
         bg = bg + out_bg
 
-        h0_obs = self.upsample_obs_1(h1)
-        h0_obs = torch.concat([h0_obs, h0], dim=1)
-        out_obs = self.upsample_obs_0(h0_obs)
-        obs = obs + out_obs
+        if self.has_obs:
+            h0_obs = self.upsample_obs_1(h1)
+            h0_obs = torch.concat([h0_obs, h0], dim=1)
+            out_obs = self.upsample_obs_0(h0_obs)
+            obs = obs + out_obs
 
-        h0_side = self.upsample_side_1(h1)
-        h0_side = torch.concat([h0_side, h0], dim=1)
-        out_side = self.upsample_side_0(h0_side)
+        out_side = None
+        if self.upsample_side_1 is not None:
+            h0_side = self.upsample_side_1(h1)
+            h0_side = torch.concat([h0_side, h0], dim=1)
+            out_side = self.upsample_side_0(h0_side)
         return bg, obs, out_side
 
 
@@ -178,7 +183,7 @@ class AssimilationBlockv2(nn.Module):
         # bg.ndim (n c h w),
         #
         bg = self.bg_encoder(bg)
-        obs = self.obs_encoder(obs)
+        obs = self.obs_encoder(obs) if self.obs_encoder is not None else None
         side_info = self.side_encoder(side_info)
 
         bg, obs, side_info = self.fussion(bg, obs, side_info)
@@ -223,45 +228,60 @@ class AssimilationNetv6(nn.Module):
         # 不满足（120/4=30，30 不是 4 的倍数），所以先用 replicate 补齐、
         # 出来再裁回原尺寸。
         self.pad_multiple = int(pad_multiple)
+        self.has_obs = obs_chans > 0
         side_chans = obs_chans * obs_frames + bg_chans
         obs_chans = obs_chans * obs_frames
 
         self.block_0 = AssimilationBlockv2(
             bg_encoder=EncoderBlock(in_chans=bg_chans, embed_dim=embed_dim, out_chans=embed_dim, act=True),
-            obs_encoder=EncoderBlock(in_chans=obs_chans, embed_dim=embed_dim, out_chans=embed_dim, act=True),
+            obs_encoder=EncoderBlock(in_chans=obs_chans, embed_dim=embed_dim, out_chans=embed_dim, act=True) if self.has_obs else None,
             side_encoder=EncoderBlock(in_chans=side_chans, embed_dim=embed_dim, out_chans=embed_dim, act=True),
-            fussion=FussionStackv2(in_chans_bg=embed_dim, in_chans_obs=embed_dim, in_chans_side=embed_dim,
+            fussion=FussionStackv2(in_chans_bg=embed_dim, in_chans_obs=embed_dim if self.has_obs else 0, in_chans_side=embed_dim,
                                    embed_dim=embed_dim, depth=depth[0], module=FussionNetv2))
 
         self.block_1 = AssimilationBlockv2(
             bg_encoder=EncoderBlock(in_chans=embed_dim, embed_dim=embed_dim * 2, out_chans=embed_dim * 2, act=True),
-            obs_encoder=EncoderBlock(in_chans=embed_dim, embed_dim=embed_dim * 2, out_chans=embed_dim * 2, act=True),
+            obs_encoder=EncoderBlock(in_chans=embed_dim, embed_dim=embed_dim * 2, out_chans=embed_dim * 2, act=True) if self.has_obs else None,
             side_encoder=EncoderBlock(in_chans=embed_dim, embed_dim=embed_dim * 2, out_chans=embed_dim * 2, act=True),
-            fussion=FussionStackv2(in_chans_bg=embed_dim * 2, in_chans_obs=embed_dim * 2, in_chans_side=embed_dim * 2,
+            fussion=FussionStackv2(in_chans_bg=embed_dim * 2, in_chans_obs=embed_dim * 2 if self.has_obs else 0, in_chans_side=embed_dim * 2,
                                    embed_dim=embed_dim, depth=depth[1], module=FussionNetv2))
 
         self.block_2 = AssimilationBlockv2(
             bg_encoder=DecoderBlock(in_chans=embed_dim * 2, embed_dim=embed_dim * 2, out_chans=embed_dim, act=True),
-            obs_encoder=DecoderBlock(in_chans=embed_dim * 2, embed_dim=embed_dim * 2, out_chans=embed_dim, act=True),
+            obs_encoder=DecoderBlock(in_chans=embed_dim * 2, embed_dim=embed_dim * 2, out_chans=embed_dim, act=True) if self.has_obs else None,
             side_encoder=DecoderBlock(in_chans=embed_dim * 2, embed_dim=embed_dim * 2, out_chans=embed_dim, act=True),
-            fussion=FussionStackv2(in_chans_bg=embed_dim, in_chans_obs=embed_dim, in_chans_side=embed_dim,
+            fussion=FussionStackv2(in_chans_bg=embed_dim, in_chans_obs=embed_dim if self.has_obs else 0, in_chans_side=embed_dim,
                                    embed_dim=embed_dim, depth=depth[2], module=FussionNetv2))
+
+        if not self.has_obs:
+            # The last side output has no consumer: omit its unused decoders.
+            last_fusion = self.block_2.fussion.module_list[-1]
+            last_fusion.upsample_side_1 = None
+            last_fusion.upsample_side_0 = None
 
         self.enhance1 = EnhanceStack(in_chans=bg_chans, embed_dim=embed_dim)
         self.enhance2 = EnhanceStack(in_chans=bg_chans, embed_dim=embed_dim)
         self.decoder = DecoderBlock(in_chans=embed_dim * 2, embed_dim=embed_dim, out_chans=bg_chans, act=False)
 
-    def forward(self, bg, obs):
+    def forward(self, bg, obs=None):
+        if self.has_obs and obs is None:
+            raise ValueError('The observation-enabled model requires obs')
+        if not self.has_obs:
+            if obs is not None and obs.numel() != 0:
+                raise ValueError('The background-only model accepts no observation channels')
+            obs = None
         H, W = int(bg.shape[-2]), int(bg.shape[-1])
         ph, pw = (-H) % self.pad_multiple, (-W) % self.pad_multiple
         if not (ph or pw):
             return self._forward(bg, obs)
-        B, T, C = int(obs.shape[0]), int(obs.shape[1]), int(obs.shape[2])
         bg_f = rearrange(bg, 'b t c h w -> b (t c) h w')
-        obs_f = rearrange(obs, 'b t c h w -> b (t c) h w')
         bg_p = F.pad(bg_f, (0, pw, 0, ph), mode='replicate').unsqueeze(1)
-        obs_p = F.pad(obs_f, (0, pw, 0, ph), mode='replicate')
-        obs_p = obs_p.reshape(B, T, C, H + ph, W + pw)
+        obs_p = None
+        if self.has_obs:
+            B, T, C = obs.shape[:3]
+            obs_f = rearrange(obs, 'b t c h w -> b (t c) h w')
+            obs_p = F.pad(obs_f, (0, pw, 0, ph), mode='replicate')
+            obs_p = obs_p.reshape(B, T, C, H + ph, W + pw)
         out = self._forward(bg_p, obs_p)
         return out[..., :H, :W]
 
@@ -269,8 +289,9 @@ class AssimilationNetv6(nn.Module):
         bg = rearrange(bg, 'b t c h w -> b (t c) h w')
         bg_cp = bg.clone()
         
-        obs_data = rearrange(obs, 'b t c h w -> b (t c) h w')
-        side_info = torch.concat([bg, obs_data], dim=1)
+        obs_data = rearrange(obs, 'b t c h w -> b (t c) h w') if self.has_obs else None
+        # In the ablation, side_info contains only FuXi, without coordinates/masks.
+        side_info = torch.concat([bg, obs_data], dim=1) if self.has_obs else bg
         # n c h w
         bg0, obs_data, side_info = self.block_0(bg, obs_data, side_info)
         bg1, obs_data, side_info = self.block_1(bg0, obs_data, side_info)

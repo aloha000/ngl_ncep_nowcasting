@@ -249,7 +249,8 @@ class MyDataset(Dataset):
         self._rng = np.random.default_rng(self.seed)
         self.read_era5 = read_era5(era5_dir)
         self.read_fcst = read_fcst(fcst_dir, fcst_step)
-        self.read_obs = read_obs(obs_dir, obs_stat_dir, obs_frames, obs_channum,
+        self.empty_obs_shape = (obs_frames, 0, *grid_hw)
+        self.read_obs = None if obs_channum == 0 else read_obs(obs_dir, obs_stat_dir, obs_frames, obs_channum,
                                  frame_minutes=obs_frame_minutes, grid_hw=grid_hw,
                                  add_fuxi_ztd=add_fuxi_ztd, ztd_fuxi_zarr=ztd_fuxi_zarr)
 
@@ -281,7 +282,9 @@ class MyDataset(Dataset):
         data_fcst = self.read_fcst.prepare_data(date)
 
         readtime_obs = time.perf_counter()
-        data_obs = self.read_obs.prepare_data(date)
+        # Empty tensor preserves the DataLoader tuple without reading NGL/FuXi ZTD.
+        data_obs = (torch.empty(self.empty_obs_shape) if self.read_obs is None
+                    else self.read_obs.prepare_data(date))
 
         readtime_end = time.perf_counter()
 

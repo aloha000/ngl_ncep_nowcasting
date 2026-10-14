@@ -20,7 +20,10 @@ DATASET_DIR = ('/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/
 
 # 一次运行一个目录：所有产物都落在 {work_dir}/{model_id}/ 下。
 # 做不同实验（比如观测置零）时改这个，就不会互相覆盖。
-model_id = 'lead24h_halo_input-fuxi-ztd_8bs_warmup0-0175_iter3000_lr8e-4_fuxi-zhd'  
+model_id = 'lead24h_halo_fuxi-only_no-obs-branch_8bs_warmup0-0175_iter3000_lr8e-4'
+
+# Structural ablation: remove all observation encoders/decoders; side_info = FuXi.
+remove_obs_branch = True
 
 # 消融开关：True 时把 ZTD 通道整片置零（= 训练均值），网络只看到站点几何/掩膜，
 zero_obs = False
@@ -32,7 +35,7 @@ zero_obs = False
 # 注意：打开之后 obs_encoder 第一层的输入通道数变了，**旧的 checkpoint 不能直接用**。
 add_fuxi_ztd = True
 ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h_zdz.zarr'
-obs_channum = 1 + int(add_fuxi_ztd)
+obs_channum = 0 if remove_obs_branch else 1 + int(add_fuxi_ztd)
 
 # 标签损失的格点掩膜：
 #   'none'          全域（参考版行为）
@@ -66,7 +69,7 @@ dates_test_range = ['2025010100', '2025100100']
 
 # %% Model Setting
 model_bg_chans = 70            # FuXi 70 通道（69 状态 + FuXi tp）
-model_obs_chans = obs_channum + 2   # ZTD + sin(lat) + cos(lon)
+model_obs_chans = 0 if remove_obs_branch else obs_channum + 2
 model_obs_frames = obs_frames
 model_embed_dim = 256
 model_depth = (2, 2, 2)
