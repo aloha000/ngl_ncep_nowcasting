@@ -57,8 +57,8 @@ def _prepare(configs):
     """Per-process setup: open stores once, expose the station cells."""
     global _T_CH, _R_CH, _Z_CH, _I_T2M, _I_MSL, _MEAN, _STD, _IY, _IX, _H, _CELLS, _H_GRID, _LAT_GRID
     cfg = importlib.import_module(configs)
-    gf = zarr.open(cfg.fuxi_zarr, "r")
-    dsit = Path(cfg.ngl_zarr).parent
+    gf = zarr.open(cfg.fcst_dir,"r")
+    dsit = Path(cfg.obs_dir).parent
     mp = pd.read_parquet(dsit / "ngl_europe_0p25_80x120_station_grid_map.parquet")
     st = pd.read_parquet(dsit / "ngl_europe_stations.parquet")
     cells = mp[~mp["mask"].astype(bool) & mp["station_id"].notna()].reset_index(drop=True)
@@ -145,9 +145,9 @@ def main():
 
     # ---- time alignment: background valid at label time T has init = T - lead
     from common import decode_time_axis
-    lab_t = decode_time_axis(Path(cfg.label_zarr), "time")
-    init_t = decode_time_axis(Path(cfg.fuxi_zarr), "init")
-    lead = pd.Timedelta(hours=int(cfg.fcst_step) * 6)
+    lab_t = decode_time_axis(Path(cfg.era5_dir), "time")
+    init_t = decode_time_axis(Path(cfg.fcst_dir), "init")
+    lead = pd.Timedelta(hours=int(cfg.fcst_step))
     pos = np.searchsorted(init_t.values, (lab_t - lead).values)
     pos = np.clip(pos, 0, init_t.size - 1)
     exact = init_t.values[pos] == (lab_t - lead).values
@@ -179,7 +179,7 @@ def main():
     z["time"].attrs.update({"units": "hours since 1970-01-01 00:00:00",
                             "standard_name": "time", "_ARRAY_DIMENSIONS": ["time"]})
     # station geometry, copied so the store is self-describing
-    gn = zarr.open(cfg.ngl_zarr, "r")
+    gn = zarr.open(cfg.obs_dir,"r")
     for name in ("mask", "station"):
         d = z.create_dataset(name, shape=(80, 120), dtype=gn[name].dtype, chunks=(80, 120))
         d[:] = gn[name][:]

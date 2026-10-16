@@ -15,12 +15,12 @@ import numpy as np
 
 from main.model import mse, mae
 
-work_dir = '/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/main_code/work_dir/results/stage_three/batchsize_test_4gpus_old-grad_10obs'
+work_dir = '/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/main_code/work_dir/results/stage_three/step6_batchsize8_4gpus_old-grad_10obs'
 DATASET_DIR = ('/inspire/ssd/project/sais-weather/public/linan/qz_da_ngl/da_ngl/dataset')
 
 # 一次运行一个目录：所有产物都落在 {work_dir}/{model_id}/ 下。
 # 做不同实验（比如观测置零）时改这个，就不会互相覆盖。
-model_id = 'lead24h_halo_input-fuxi-ztd_8bs_warmup0-0175_iter3000_lr8e-4_fuxi-zhd'  
+model_id = 'lead6h_halo_input-fuxi6h_8bs_warmup0-0175_iter2000_lr8e-4'  
 
 # 消融开关：True 时把 ZTD 通道整片置零（= 训练均值），网络只看到站点几何/掩膜，
 zero_obs = False
@@ -31,8 +31,10 @@ zero_obs = False
 #   False -> 只有 NGL ZTD（原行为）
 # 注意：打开之后 obs_encoder 第一层的输入通道数变了，**旧的 checkpoint 不能直接用**。
 add_fuxi_ztd = True
-ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_24h_zdz.zarr'
+ztd_fuxi_zarr = f'{DATASET_DIR}/ztd_fuxi_europe_0p25_6h_zdz.zarr'
 obs_channum = 1 + int(add_fuxi_ztd)
+
+# use_ztd_innovation = True
 
 # 标签损失的格点掩膜：
 #   'none'          全域（参考版行为）
@@ -41,10 +43,10 @@ loss_mask = 'station_halo'
 loss_halo_cells = 3
 
 era5_dir = f'{DATASET_DIR}/label_europe_0p25.zarr'
-fcst_dir = f'{DATASET_DIR}/fuxi_europe_0p25_24h_70ch.zarr'
+fcst_dir = f'{DATASET_DIR}/fuxi_europe_0p25.zarr'
 # 背景的 lead（小时）：T 时刻的背景 = T - fcst_step 起报、取 lead fcst_step 的那一帧。
 # 这个 store 里只有 lead 24 h。
-fcst_step = 24
+fcst_step = 6
 
 obs_dir = f'{DATASET_DIR}/ngl_europe_0p25_5min.zarr'
 obs_stat_dir = obs_dir
@@ -60,9 +62,9 @@ lon = np.round(np.arange(-5.25, 24.50 + 1e-9, 0.25), 6)     # 120
 grid_hw = (lat.size, lon.size)
 
 # %% Data Setting（6 小时一次）
-dates_train_range = ['2022010100', '2024123100']
-dates_val_range = ['2025010100', '2025100100']
-dates_test_range = ['2025010100', '2025100100']
+dates_train_range = ['2022010106', '2024123100']
+dates_val_range = ['2025010100', '2025093018']
+dates_test_range = ['2025010100', '2025093018']
 
 # %% Model Setting
 model_bg_chans = 70            # FuXi 70 通道（69 状态 + FuXi tp）
@@ -79,7 +81,7 @@ resume_reset_optimizer = False
 
 # %% Train Setting
 rand_seed = 2000
-num_teration = 3000
+num_teration = 2000
 batch_size = 8
 # This host exposes only 64 MiB of /dev/shm.  FSDP launches one loader per
 # rank for both train and validation, so multiprocessing workers exhaust that

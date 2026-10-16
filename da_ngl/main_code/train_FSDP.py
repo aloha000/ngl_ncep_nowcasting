@@ -93,6 +93,13 @@ def process_obs(data, mean_std_dict, rank, cfg):
     instrument_mean = mean_std_dict['instrument'][0].cuda(rank)
     instrument_std = mean_std_dict['instrument'][1].cuda(rank)
     
+    # if getattr(cfg,'use_ztd_innovation',False):
+    #     obs_ztd = (data[:,:,0:1]-instrument_mean)/instrument_std
+    #     innovation = data[:,:,0:1]
+    #     data = torch.cat([obs_ztd,innovation],dim=2)
+    # else:
+    #     data = (data - instrument_mean) / instrument_std
+    
     data = (data - instrument_mean) / instrument_std
     if getattr(cfg, 'zero_obs', False):
         # 消融：ZTD 置零（标准化空间里的 0 就是训练均值）。

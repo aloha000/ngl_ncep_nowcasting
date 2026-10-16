@@ -61,8 +61,11 @@ ERA5_ZARR = Path("/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/huangyuanqin
 IMERG_ZARR = Path(
     "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/database/fuxi-obs/imerg/zarr_25_720_more"
 )
+# MEAN_STD_DIR = Path(
+#     "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/database/fuxi-obs/obs-grid_qc/mean_std"
+# )
 MEAN_STD_DIR = Path(
-    "/cpfs01/projects-HDD/cfff-4a8d9af84f66_HDD/public/database/fuxi-obs/obs-grid_qc/mean_std"
+    "/inspire/ssd/project/sais-weather/public/fuxi-obs/obs-grid-qc_new/mean_std"
 )
 
 # ERA5/FuXi share this 70-channel order; channel 69 is ``tp`` and is dropped

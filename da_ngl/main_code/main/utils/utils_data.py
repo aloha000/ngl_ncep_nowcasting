@@ -202,6 +202,13 @@ class read_obs:
                 return None                      # 该时刻没有 FuXi ZTD，按缺样本处理
             fx = np.asarray(self.fx_store['ztd_fuxi'][int(j)], dtype='float32')
         idx = np.arange(end - self.data_frames + 1, end + 1)
+        # if self.data_frames % 2 != 1:
+        #     raise ValueError('居中观测窗口要求obs_frames为奇数')
+        # half = self.data_frames // 2
+        # offsets = np.arange(-half,half+1)
+        # times = pd.Timestamp(date) + pd.to_timedelta(offsets * self.frame_minutes,unit='min')
+        # idx = self.dates.get_indexer(times)
+        
         obs = []
         kk = 0
         for i in idx:

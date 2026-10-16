@@ -16,11 +16,17 @@ MAE，两者在同样的样本上算，可以直接比。
         --checkpoint work_assi_ztd/model/iteration_XXXX.pth
 
 不传 --checkpoint 时依次找 {work_dir}/{model_id}/model/ 下的 best.pth、最新的 .pth。
+
+评估只遍历有效日期一次，不随机替换缺失样本，loss 按样本数加权平均。
+默认 --precision fp16 对齐当前训练验证的输入/参数精度（buffer 保持 FP32）；
+--precision fp32 可用于统一的全精度评估。旧日志的 batch 平均和 DDP 补齐
+并未修改，因此本脚本不保证复现旧日志的数值。配置/预处理必须与 checkpoint 一致。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -32,6 +38,7 @@ from pathlib import Path
 os.environ.setdefault('MKL_THREADING_LAYER', 'GNU')
 
 import numpy as np
+import pandas as pd
 import torch
 import zarr
 
@@ -50,10 +57,157 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 
 from main.model import AssimilationNetv6  # noqa: E402
-from main.utils import (apply_overrides, build_dataloader, run_dir,  # noqa: E402
+from main.utils import (apply_overrides, run_dir,  # noqa: E402
                        station_halo_mask)
-from main.utils.utils_data import LABEL_IDX  # noqa: E402
-from train_FSDP import process_bg, process_obs  # noqa: E402
+from main.utils.utils_data import LABEL_IDX, MyDataset  # noqa: E402
+
+
+class EvaluationDataset(MyDataset):
+    """Keep reader semantics, but never invoke MyDataset's random retry loop."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        requested = self.dates
+        checks = {
+            'era5': requested.isin(self.read_era5.dates),
+            'fcst': (requested - pd.Timedelta(hours=self.read_fcst.fcst_step))
+                    .isin(self.read_fcst.dates),
+        }
+        obs_reader = getattr(self, 'read_obs', None)
+        if obs_reader is not None:
+            checks['obs'] = requested.isin(obs_reader.dates)
+            if obs_reader.add_fuxi_ztd:
+                checks['fuxi_ztd'] = requested.isin(obs_reader.fx_times)
+        valid = np.logical_and.reduce(list(checks.values()))
+        self.excluded_dates = [
+            {'date': date.isoformat(),
+             'missing': [name for name, available in checks.items() if not available[i]]}
+            for i, date in enumerate(requested) if not valid[i]
+        ]
+        self.requested_samples = len(requested)
+        self.dates = requested[valid]
+        if not len(self.dates):
+            raise ValueError('指定日期范围内没有完整的评估样本，请检查数据时间轴')
+        if not self.dates.is_unique:
+            raise ValueError('评估日期存在重复')
+        print(f'[Eval Data] requested={len(requested)}, valid={len(self.dates)}, '
+              f'excluded={len(self.excluded_dates)}; no replacement / no padding')
+        for item in self.excluded_dates[:10]:
+            print(f'  excluded {item["date"]}: {", ".join(item["missing"])}')
+
+    def __getitem__(self, idx):
+        sample = self.prepare_data(idx)
+        if any(value is None for value in sample):
+            raise RuntimeError(f'评估样本 {self.dates[idx]} 读取失败；停止评估，不随机替换')
+        return sample
+
+
+class SampleMeanLoss:
+    """Batch loss already averages over B; weight the last partial batch by B."""
+
+    def __init__(self):
+        self.bg_sum = self.analysis_sum = 0.0
+        self.n_samples = self.n_batches = 0
+
+    def update(self, background, analysis, batch_size):
+        bg, an = float(background), float(analysis)
+        if batch_size <= 0 or not np.isfinite([bg, an]).all():
+            raise ValueError('评估 loss 非有限值或 batch_size 非正数，停止写出结果')
+        self.bg_sum += bg * batch_size
+        self.analysis_sum += an * batch_size
+        self.n_samples += batch_size
+        self.n_batches += 1
+
+    def means(self):
+        if not self.n_samples:
+            raise ValueError('没有已评估的样本')
+        return self.bg_sum / self.n_samples, self.analysis_sum / self.n_samples
+
+
+def set_eval_precision(model, precision):
+    # Match FSDP(param_dtype=fp16, buffer_dtype=fp32), not model.half(), which
+    # would also cast floating-point buffers. No autocast is used in training.
+    dtype = {'fp16': torch.float16, 'fp32': torch.float32}[precision]
+    model.float()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.data = parameter.data.to(dtype=dtype)
+    return dtype
+
+
+def json_value(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: json_value(item) for key, item in value.items()}
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError(f'Cannot serialize {type(value).__name__}')
+
+
+def evaluation_metadata(cfg, args, ds, model, mean_std_dict, ckpt, n_samples):
+    # Store resolved values, not just CLI overrides. Source hashes capture local
+    # reader/preprocessing edits that are not represented by a config switch.
+    keys = ('model_id', 'era5_dir', 'fcst_dir', 'fcst_step', 'obs_dir', 'obs_stat_dir',
+            'obs_frames', 'obs_frame_minutes', 'obs_channum', 'add_fuxi_ztd',
+            'ztd_fuxi_zarr', 'zero_obs', 'remove_obs_branch', 'use_ztd_innovation',
+            'model_bg_chans', 'model_obs_chans', 'model_obs_frames',
+            'model_embed_dim', 'model_depth', 'grid_hw', 'lat', 'lon',
+            'loss_mask', 'loss_halo_cells', 'dates_train_range', 'dates_val_range',
+            'dates_test_range', 'rand_seed')
+    paths = [Path(__file__), HERE / 'train_FSDP.py',
+             HERE / 'main/utils/utils_data.py', HERE / 'main/model/assimilation.py',
+             HERE / 'main/model/build_optimizer.py', HERE / 'main/utils/configuration.py']
+    if getattr(cfg, '__file__', None):
+        paths.append(Path(cfg.__file__))
+    stat = ckpt.stat()
+    return {
+        'schema_version': 2,
+        'loss_reduction': 'sample_mean',
+        'sampler': 'sequential_no_padding',
+        'missing_sample_policy': 'filter_missing_times_then_fail_on_read_error',
+        'observation_window_policy': 'unchanged_reader_semantics_nan_padding_allowed',
+        'precision': args.precision,
+        'parameter_dtypes': sorted({str(p.dtype) for p in model.parameters()}),
+        'buffer_dtypes': sorted({str(b.dtype) for b in model.buffers()}),
+        'channel_mae_precision': 'float32_after_input_cast',
+        'batch_size': args.batch_size if args.batch_size is not None else cfg.batch_size,
+        'num_workers': args.num_workers if args.num_workers is not None else cfg.num_workers,
+        'max_batches': args.max_batches,
+        'partial_evaluation': n_samples != len(ds),
+        'n_requested_samples': ds.requested_samples,
+        'n_valid_samples': len(ds),
+        'excluded_dates': ds.excluded_dates,
+        'evaluated_dates': [date.isoformat() for date in ds.dates[:n_samples]],
+        'configs_module': args.configs,
+        'cli_overrides': ([f'model_id={args.model_id}'] if args.model_id else []) + args.set,
+        'resolved_config': {key: json_value(getattr(cfg, key)) for key in keys if hasattr(cfg, key)},
+        'obs_normalization': json_value(mean_std_dict),
+        'loss_class': f'{type(cfg.loss_fn).__module__}.{type(cfg.loss_fn).__qualname__}',
+        'loss_lat': json_value(getattr(cfg.loss_fn, 'lat', None)),
+        'loss_obs_rect': json_value(getattr(cfg.loss_fn, 'obs_rect', None)),
+        'loss_cell_mask': json_value(getattr(cfg.loss_fn, 'cell_mask', None)),
+        'label_channel_indices': LABEL_IDX.tolist(),
+        'checkpoint_size_bytes': stat.st_size,
+        'checkpoint_mtime_ns': stat.st_mtime_ns,
+        'source_sha256': {str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in paths},
+        'torch_version': str(torch.__version__),
+        'cuda_version': torch.version.cuda,
+        'gpu': torch.cuda.get_device_name(0),
+        'cudnn_benchmark': torch.backends.cudnn.benchmark,
+        'cudnn_deterministic': torch.backends.cudnn.deterministic,
+        'matmul_allow_tf32': torch.backends.cuda.matmul.allow_tf32,
+        'cudnn_allow_tf32': torch.backends.cudnn.allow_tf32,
+    }
 
 
 def pick_checkpoint(cfg, explicit=None) -> Path:
@@ -82,10 +236,8 @@ def load_model(cfg, ckpt: Path, device):
     # FSDP / DDP 的前缀去掉
     sd = {k.replace('_fsdp_wrapped_module.', '').replace('module.', ''): v
           for k, v in sd.items()}
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if missing or unexpected:
-        print(f'[warn] state_dict 不完全匹配：缺 {len(missing)} 个、多 {len(unexpected)} 个'
-              f'（缺的前 3 个：{list(missing)[:3]}）')
+    # Incomplete loading would silently evaluate random/untrained parameters.
+    model.load_state_dict(sd, strict=True)
     model.eval()
     return model
 
@@ -98,6 +250,8 @@ def main() -> None:
     ap.add_argument('--checkpoint', default=None)
     ap.add_argument('--batch-size', type=int, default=None)
     ap.add_argument('--num-workers', type=int, default=None)
+    ap.add_argument('--precision', choices=('fp16', 'fp32'), default='fp16',
+                    help='默认 fp16：对齐训练验证的输入/参数精度；fp32：全精度评估')
     ap.add_argument('--max-batches', type=int, default=0, help='>0 时只跑这么多 batch（调试用）')
     ap.add_argument('--out-dir', default=None)
     ap.add_argument('--model_id', default=None,
@@ -105,6 +259,12 @@ def main() -> None:
     ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
                     help='覆盖 configs 里的设置，例：--set zero_obs=true')
     args = ap.parse_args()
+    if args.batch_size is not None and args.batch_size <= 0:
+        ap.error('--batch-size 必须 > 0')
+    if args.num_workers is not None and args.num_workers < 0:
+        ap.error('--num-workers 必须 >= 0')
+    if args.max_batches < 0:
+        ap.error('--max-batches 必须 >= 0')
 
     cfg = importlib.import_module(args.configs)
     # 必须在 run_dir() / 建 loader 之前生效
@@ -113,6 +273,10 @@ def main() -> None:
         raise SystemExit('数据管道（process_bg/process_obs）写在 CUDA 上，需要一张 GPU')
     device = torch.device('cuda:0')
     rank = 0
+    # Delay the training import until actual evaluation: --help and CPU unit
+    # tests should not initialize wandb even in disabled mode.
+    from train_FSDP import process_bg, process_obs
+    torch.manual_seed(int(getattr(cfg, 'rand_seed', 2000)))
 
     # halo 掩膜（站点格 + 周围 loss_halo_cells 格）：**总是**算出来用于报告；
     # 是否把它用进损失，取决于 cfg.loss_mask（要和训练时一致）。
@@ -132,20 +296,28 @@ def main() -> None:
     dates_range = {'train': cfg.dates_train_range,
                    'val': cfg.dates_val_range,
                    'test': cfg.dates_test_range}[args.split]
-    dataloader = build_dataloader(world_size=1, rank=0,
-                                  era5_dir=cfg.era5_dir, fcst_dir=cfg.fcst_dir,
+    ds = EvaluationDataset(era5_dir=cfg.era5_dir, fcst_dir=cfg.fcst_dir,
                                   fcst_step=cfg.fcst_step, obs_dir=cfg.obs_dir,
                                   obs_frames=cfg.obs_frames, obs_stat_dir=cfg.obs_stat_dir,
                                   obs_channum=cfg.obs_channum, dates_range=dates_range,
-                                  batch_size=args.batch_size or cfg.batch_size,
-                                  num_workers=cfg.num_workers if args.num_workers is None else args.num_workers,
-                                  persistent_workers=False, shuffle=False,
                                   obs_frame_minutes=cfg.obs_frame_minutes,
                                   grid_hw=cfg.grid_hw,
                                   add_fuxi_ztd=cfg.add_fuxi_ztd,
                                   ztd_fuxi_zarr=cfg.ztd_fuxi_zarr)
-    ds = dataloader.dataset
-    mean_std_dict = ds.read_obs.mean_std_dict
+    num_workers = cfg.num_workers if args.num_workers is None else args.num_workers
+    worker_options = {}
+    if num_workers:
+        worker_options = {
+            'prefetch_factor': getattr(cfg, 'prefetch_factor', 5),
+            'multiprocessing_context': getattr(cfg, 'multiprocessing_context', 'forkserver'),
+        }
+    dataloader = torch.utils.data.DataLoader(
+        ds, batch_size=cfg.batch_size if args.batch_size is None else args.batch_size,
+        shuffle=False, drop_last=False, num_workers=num_workers,
+        persistent_workers=False, pin_memory=getattr(cfg, 'pin_memory', False),
+        **worker_options)
+    obs_reader = getattr(ds, 'read_obs', None)
+    mean_std_dict = obs_reader.mean_std_dict if obs_reader is not None else {}
     n_chan = len(LABEL_IDX)
     all_ch = np.asarray([str(c) for c in zarr.open(str(cfg.era5_dir), mode='r')['channel'][:]])
     names = [str(c) for c in all_ch[LABEL_IDX]]
@@ -155,28 +327,36 @@ def main() -> None:
     n_st = int(station.sum())
 
     model = load_model(cfg, ckpt, device)
-    lut = torch.cos(torch.deg2rad(torch.as_tensor(np.asarray(cfg.lat, dtype='float32'),
-                                                  device=device), ))
-    lut = (lut / lut.mean()).view(1, 1, -1, 1)                              # 纬度权重
+    dtype = set_eval_precision(model, args.precision)
+    print(f'[Eval] precision={args.precision}, loss=sample_mean, sequential (no DDP padding)')
+    print('[Eval] 使用当前配置及预处理代码；请确保它们与 checkpoint 训练时一致。')
+    if list(cfg.dates_val_range) == list(cfg.dates_test_range):
+        print('[warn] val/test 日期范围相同，不是独立测试集。')
 
     hl_t = torch.as_tensor(halo).to(device)
     n_hl = int(halo.sum())
     acc = {k: np.zeros(n_chan) for k in
            ('bg', 'an', 'bg_st', 'an_st', 'bg_hl', 'an_hl')}
     n_smp = n_cell = n_cell_st = n_cell_hl = 0
-    loss_bg, loss_an, n_batch = 0.0, 0.0, 0
+    losses = SampleMeanLoss()
 
     with torch.no_grad():
         for i, (bf, be, bo) in enumerate(dataloader):
             bf = process_bg(bf, rank, cfg.grid_hw)
             be = process_bg(be, rank, cfg.grid_hw)
-            bo = process_obs(bo, mean_std_dict, rank, cfg)
-            out = model(bf.float(), bo.float())
+            if cfg.model_obs_chans > 0:
+                bo = process_obs(bo, mean_std_dict, rank, cfg).to(dtype=dtype)
+            bf = bf.to(dtype=dtype)
+            be = be.to(dtype=dtype)
+            out = model(bf, bo) if cfg.model_obs_chans > 0 else model(bf)
+            # Keep weighted loss arithmetic identical to training: subtraction
+            # happens in FP16 in fp16 mode, before latitude weighting promotes it.
+            losses.update(cfg.loss_fn(bf, be), cfg.loss_fn(out, be), int(bf.shape[0]))
             lab = be.float()
 
             # (B,1,C,H,W) -> (B,C,H,W)：T 维是 1，直接去掉
             d_bg = (bf.float()[:, 0] - lab[:, 0]).abs()
-            d_an = (out[:, 0] - lab[:, 0]).abs()
+            d_an = (out.float()[:, 0] - lab[:, 0]).abs()
             acc['bg'] += d_bg.sum(dim=(0, 2, 3)).cpu().numpy()
             acc['an'] += d_an.sum(dim=(0, 2, 3)).cpu().numpy()
             acc['bg_st'] += (d_bg * st_t).sum(dim=(0, 2, 3)).cpu().numpy()
@@ -184,9 +364,6 @@ def main() -> None:
             acc['bg_hl'] += (d_bg * hl_t).sum(dim=(0, 2, 3)).cpu().numpy()
             acc['an_hl'] += (d_an * hl_t).sum(dim=(0, 2, 3)).cpu().numpy()
 
-            loss_bg += float(cfg.loss_fn(bf.float(), lab))
-            loss_an += float(cfg.loss_fn(out, lab))
-            n_batch += 1
             n_smp += int(bf.shape[0])
             n_cell += int(bf.shape[0] * d_bg.shape[2] * d_bg.shape[3])   # B x H x W
             n_cell_st += int(bf.shape[0] * n_st)
@@ -196,6 +373,9 @@ def main() -> None:
                 print(f'  {i+1}/{len(dataloader)} batch', flush=True)
             if args.max_batches and (i + 1) >= args.max_batches:
                 break
+
+    loss_bg, loss_an = losses.means()
+    n_batch = losses.n_batches
 
     n_cell = max(n_cell, 1)
     n_cell_st = max(n_cell_st, 1)
@@ -211,8 +391,8 @@ def main() -> None:
     imp_hl = 100.0 * (mae_bg_hl - mae_an_hl) / mae_bg_hl
 
     print(f'\n样本 {n_smp}（{n_batch} batch），网格 {cfg.grid_hw}，站格 {n_st}')
-    print(f'损失函数口径（纬度加权，70 通道）:  背景 {loss_bg / max(n_batch,1):.5f}   '
-          f'分析 {loss_an / max(n_batch,1):.5f}   '
+    print(f'损失函数口径（纬度加权，{n_chan} 通道，按样本平均）:  背景 {loss_bg:.8f}   '
+          f'分析 {loss_an:.8f}   '
           f'提升 {100 * (loss_bg - loss_an) / max(loss_bg, 1e-9):+.3f}%')
     print(f'逐通道平均 MAE（全网格）:            背景 {mae_bg.mean():.5f}   '
           f'分析 {mae_an.mean():.5f}   提升 {100 * (mae_bg.mean() - mae_an.mean()) / mae_bg.mean():+.3f}%')
@@ -276,7 +456,10 @@ def main() -> None:
 
     with open(out_dir / f'eval_summary_{args.split}.json', 'w') as fh:
         json.dump({'split': args.split, 'checkpoint': str(ckpt), 'n_samples': n_smp,
-                   'loss_bg': loss_bg / max(n_batch, 1), 'loss_analysis': loss_an / max(n_batch, 1),
+                   'loss_bg': loss_bg, 'loss_analysis': loss_an,
+                   'n_batches': n_batch,
+                   'evaluation': evaluation_metadata(cfg, args, ds, model, mean_std_dict,
+                                                     ckpt, n_smp),
                    'mae_bg_mean': float(mae_bg.mean()), 'mae_analysis_mean': float(mae_an.mean()),
                    'mae_bg_station_mean': float(mae_bg_st.mean()),
                    'mae_analysis_station_mean': float(mae_an_st.mean()),
